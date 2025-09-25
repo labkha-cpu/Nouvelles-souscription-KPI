@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "1) Export RCIA/IEHE",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/Scripts/01_export_referentiels.py",
+        "--new-s", "${workspaceFolder}/Input_Data",
+        "--out-dir", "${workspaceFolder}/Output"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "2) KPI (HTML)",
+      "type": "shell",
+      "dependsOn": "1) Export RCIA/IEHE",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/Scripts/02_calcul_kpi_rapport.py",
+        "--data-dir", "${workspaceFolder}/Input_Data",
+        "--out", "${workspaceFolder}/Output",
+        "--title", "Qualité NS"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Tout lancer (Export → KPI)",
+      "dependsOn": [
+        "1) Export RCIA/IEHE",
+        "2) KPI (HTML)"
+      ],
+      "dependsOrder": "sequence"
+    }
+  ]
+}
