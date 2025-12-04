@@ -7,6 +7,23 @@ from pathlib import Path
 from datetime import datetime
 import warnings
 
+"""
+================================================================================
+SCRIPT : 03_generation_fichiers_detail.py
+DESCRIPTION : Génération des fichiers de détail enrichis (NS_CIAM, NS_IEHE)
+              avec consolidation des résultats de matching.
+
+--- HISTORIQUE DES VERSIONS ---
+VERSION | DATE       | DESCRIPTION
+--------------------------------------------------------------------------------
+1.0     | Initial    | Création du script
+1.1     | 2025-10-XX | - Correction nom colonne 'CIAM_Société' -> 'CIAM_Societe'
+                     |   (suppression accent pour compatibilité BDD/SQL)
+                     | - Sécurisation génération NS_IEHE (vérification colonnes)
+                     |   et conservation logique LEFT JOIN.
+================================================================================
+"""
+
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).resolve().parent
 BASE_DIR = SCRIPT_DIR if (SCRIPT_DIR / "Input_Data").exists() else SCRIPT_DIR.parent
@@ -209,7 +226,8 @@ def main():
     df_work['Methode_Retenue'] = 'AUCUNE'
     
     # Colonnes cibles à remplir (initialisation object pour éviter warning)
-    target_cols = ['CIAM_Source', 'CIAM_Email_Cible', 'CIAM_KPEP_Cible', 'CIAM_Société']
+    # Correction: 'CIAM_Societe' sans accent pour éviter problèmes SQL
+    target_cols = ['CIAM_Source', 'CIAM_Email_Cible', 'CIAM_KPEP_Cible', 'CIAM_Societe']
     for col in target_cols: 
         df_work[col] = np.nan
         df_work[col] = df_work[col].astype('object')
@@ -218,14 +236,14 @@ def main():
     mask = m5['realm_id'].notna()
     df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE_FAIBLE'
     df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom'
-    df_work.loc[mask, 'CIAM_Société'] = m5.loc[mask, 'realm_id']
+    df_work.loc[mask, 'CIAM_Societe'] = m5.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_Email_Cible'] = m5.loc[mask, 'email']
 
     # Priorité 4 : Identité Complète (Forte)
     mask = m4['realm_id'].notna()
     df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE'
     df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom+Date'
-    df_work.loc[mask, 'CIAM_Société'] = m4.loc[mask, 'realm_id']
+    df_work.loc[mask, 'CIAM_Societe'] = m4.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_Email_Cible'] = m4.loc[mask, 'email']
 
     # Priorité 3 : KPEP
@@ -233,7 +251,7 @@ def main():
     df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_KPEP'
     df_work.loc[mask, 'Methode_Retenue'] = 'KPEP'
     df_work.loc[mask, 'CIAM_Source'] = 'CK'
-    df_work.loc[mask, 'CIAM_Société'] = m3.loc[mask, 'realm_id']
+    df_work.loc[mask, 'CIAM_Societe'] = m3.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_KPEP_Cible'] = m3.loc[mask, 'key_kpep']
 
     # Priorité 2 : Val Coord (Email)
@@ -241,7 +259,7 @@ def main():
     df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
     df_work.loc[mask, 'Methode_Retenue'] = 'Val_Coord'
     df_work.loc[mask, 'CIAM_Source'] = 'CM'
-    df_work.loc[mask, 'CIAM_Société'] = m2.loc[mask, 'realm_id']
+    df_work.loc[mask, 'CIAM_Societe'] = m2.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_Email_Cible'] = m2.loc[mask, 'email']
 
     # Priorité 1 : Mail CIAM (Priorité Absolue)
@@ -249,7 +267,7 @@ def main():
     df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
     df_work.loc[mask, 'Methode_Retenue'] = 'Mail_CIAM'
     df_work.loc[mask, 'CIAM_Source'] = 'CM'
-    df_work.loc[mask, 'CIAM_Société'] = m1.loc[mask, 'realm_id']
+    df_work.loc[mask, 'CIAM_Societe'] = m1.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_Email_Cible'] = m1.loc[mask, 'email']
 
     # Nettoyage
@@ -261,17 +279,22 @@ def main():
     df_work.to_csv(f_ciam, index=False, sep=',', encoding='utf-8-sig')
     print(f"   ✅ {f_ciam.name}")
 
-    # --- 4. GENERATION NS_IEHE (inchangé) ---
+    # --- 4. GENERATION NS_IEHE ---
     print("   🔨 Construction NS_IEHE...")
     
+    # On repart du fichier NS propre
     df_iehe_out = df_ns.copy()
     col_id_ns = get_col_name(df_ns, ['num_personne', 'numpersonne'])
     col_id_iehe = 'refperboccn'
     
     if df_iehe is not None and col_id_ns and col_id_iehe in df_iehe.columns:
+        # Dédoublonnage sur la clé IEHE pour éviter l'explosion du nombre de lignes
         df_iehe_ref = df_iehe.drop_duplicates(subset=[col_id_iehe]).set_index(col_id_iehe)
+        
+        # Merge LEFT pour conserver tous les enregistrements NS
         df_merged = df_iehe_out.merge(df_iehe_ref, left_on=col_id_ns, right_index=True, how='left', suffixes=('', '_iehe'))
         
+        # Calcul de l'indicateur de présence
         col_temoin = get_col_name(df_iehe, ['idrpp', 'adrmailctc', 'telmbictc'])
         if col_temoin:
             df_merged['IEHE_Present'] = df_merged[col_temoin].notna().map({True: 'OUI', False: 'NON'})
@@ -282,7 +305,7 @@ def main():
         df_merged.to_csv(f_iehe, index=False, sep=',', encoding='utf-8-sig')
         print(f"   ✅ {f_iehe.name}")
     else:
-        print("   ⚠️ Impossible de générer NS_IEHE")
+        print("   ⚠️ Impossible de générer NS_IEHE (Fichier IEHE manquant ou colonne ID introuvable)")
 
 if __name__ == "__main__":
     main()
