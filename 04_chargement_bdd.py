@@ -6,6 +6,7 @@ from datetime import datetime
 import sqlalchemy
 from sqlalchemy import create_engine, text
 from sqlalchemy.types import Date, DateTime, String, Integer
+import re
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -28,16 +29,16 @@ def get_engine():
     return create_engine(url)
 
 def clean_col_name(col):
-    """Nettoie les noms de colonnes (suppression BOM, accents, espaces)."""
+    """Nettoie les noms de colonnes pour SQL (suppression BOM, accents, espaces, quotes)."""
     if not isinstance(col, str): return str(col)
     
-    # 1. Suppression des caractères invisibles (BOM)
-    col = col.replace('\ufeff', '').replace('\u200b', '')
+    # 1. Suppression des caractères invisibles (BOM) et quotes
+    col = col.replace('\ufeff', '').replace('\u200b', '').replace('"', '').replace("'", "")
     
     # 2. Nettoyage standard
     col = col.lower().strip()
     col = col.replace(" ", "_").replace("-", "_").replace(".", "")
-    col = col.replace("é", "e").replace("è", "e").replace("'", "")
+    col = col.replace("é", "e").replace("è", "e").replace("à", "a")
     
     # 3. Correction spécifique
     col = col.replace("__", "_")
@@ -45,6 +46,7 @@ def clean_col_name(col):
     return col
 
 def load_csv_robust(path):
+    """Charge un CSV, nettoie les colonnes et les valeurs (Quotes)."""
     if not path.exists(): return None
     
     read_params = {'sep': None, 'engine': 'python', 'dtype': str}
@@ -62,15 +64,26 @@ def load_csv_robust(path):
         try:
             df = pd.read_csv(path, **current_params)
             if len(df.columns) > 1:
-                # Nettoyage immédiat des colonnes
+                # 1. Nettoyage Noms Colonnes (SQL Friendly)
                 df.columns = [clean_col_name(c) for c in df.columns]
+                
+                # 2. Suppression colonnes parasites (Unnamed) et doublons
+                cols_to_keep = [c for c in df.columns if not c.startswith('unnamed')]
+                df = df[cols_to_keep]
                 df = df.loc[:, ~df.columns.duplicated()]
+
+                # 3. Nettoyage Valeurs (Gestion des quotes parasites comme dans script 02/03)
+                # C'est CRITIQUE pour que "2025-11-24" soit reconnu comme une date et non une string '"2025-11-24"'
+                for col in df.columns:
+                    df[col] = df[col].astype(str).str.strip().str.replace('"', '', regex=False).replace({'nan': '', 'None': ''})
+                
                 return df
         except: continue
     return None
 
 def find_latest_prefix(directory):
     if not directory.exists(): return None
+    # On cherche le prefixe dans les fichiers New_S
     for f in directory.glob("*_New_S.csv"):
         if f.name[:8].isdigit(): return f.name[:8]
     return None
@@ -85,13 +98,8 @@ def upload_dataframe(df, table_name, engine, flux_id):
     df = df.copy()
     
     # --- 1. GESTION DU CONFLIT 'ID' ---
-    # Si le fichier a une colonne 'id' (ex: les UUIDs de CK/CM), 
-    # on la renomme pour ne pas clasher avec la PK de la table SQL.
     if 'id' in df.columns:
         df.rename(columns={'id': 'id_csv'}, inplace=True)
-        # Note : Assurez-vous d'avoir ajouté la colonne "id_csv" dans vos tables SQL 
-        # si vous voulez conserver cette info. Sinon elle sera ignorée ou causera une erreur
-        # selon la configuration. Ici on prend le risque qu'elle soit ignorée si absente.
 
     # --- 2. METADONNEES ---
     df['flux_id'] = flux_id
@@ -101,10 +109,11 @@ def upload_dataframe(df, table_name, engine, flux_id):
     dtype_map = {}
     for col in df.columns:
         if "date" in col and col != "date_import":
+            # Le nettoyage des quotes effectué dans load_csv_robust permet à to_datetime de fonctionner
             df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
             dtype_map[col] = Date() # Force le type DATE pour SQL
     
-    # Conversion NULL
+    # Conversion NULL pour SQL
     df = df.where(pd.notnull(df), None)
 
     # --- 4. NETTOYAGE PREALABLE (Idempotence) ---
@@ -172,6 +181,10 @@ def main():
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_IEHE.csv"),  "input_iehe", engine, prefix)
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_CK.csv"),    "input_ck", engine, prefix)
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_CM.csv"),    "input_cm", engine, prefix)
+    
+    # NOUVEAUX FICHIERS DE RECHERCHE
+    upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_Rech_Nom.csv"),    "input_rech_nom", engine, prefix)
+    upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_Rech_Middle.csv"), "input_rech_middle", engine, prefix)
 
     print("\n--- OUTPUTS CSV ---")
     upload_dataframe(load_csv_robust(OUTPUT_DIR / f"{prefix}_NS_CIAM.csv"), "output_new_s_ciam", engine, prefix)
@@ -184,3 +197,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --- VERSION DU SCRIPT ---
+# Version: 3.2
+# Date: 03/12/2025
+# Modifications :
+# - Nettoyage des quotes (comme scripts 02/03) pour garantir le typage SQL (Date).
+# - Ajout chargement input_rech_nom et input_rech_middle.
+# - Nettoyage colonne SQL.
+# -------------------------
