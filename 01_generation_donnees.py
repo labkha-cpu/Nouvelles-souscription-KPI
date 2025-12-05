@@ -229,7 +229,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         temp_df = df_reliquat[[col_nom, col_dnaiss]].dropna().copy()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            temp_df['dt_fmt'] = pd.to_datetime(temp_df[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+            temp_df['dt_fmt'] = pd.to_datetime(temp_df[col_dnaiss], format='%Y-%m-%d', errors='coerce').dt.strftime('%Y-%m-%d')
         
         temp_df = temp_df.dropna(subset=['dt_fmt'])
         temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.strip().str.replace("'", "''") 
