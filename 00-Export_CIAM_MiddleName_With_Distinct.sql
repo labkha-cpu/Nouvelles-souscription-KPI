@@ -1,4 +1,4 @@
---Formule Excel ="OR (usr.first_name ILIKE " & "'" & H14 & "' AND attmiddle.value ILIKE " & "'" & G14 & "'" & " AND att2.value = " & "'" & TEXTE(J14;"aaaa-mm-jj") & "')"
+/* REQUETE RECHERCHE MIDDLE NAME / DATE NAISSANCE */
 SELECT DISTINCT ON (first_name, middleName, birthDate)
   id,
   realm_id,
@@ -45,11 +45,9 @@ FROM (
   LEFT JOIN rcia.user_attribute attphone ON usr.id = attphone.user_id AND attphone.name = 'phoneNumber'
   LEFT JOIN rcia.user_attribute attorigin ON usr.id = attorigin.user_id AND attorigin.name = 'originCreation'
   WHERE usr.realm_id != 'master'
-    AND TO_TIMESTAMP(usr.created_timestamp / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01 00:00:00', 'YYYY-MM-DD HH24:MI:SS') 
-    AND TO_TIMESTAMP('2025-11-30 00:00:00', 'YYYY-MM-DD HH24:MI:SS')
+    AND TO_TIMESTAMP(usr.created_timestamp / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01', 'YYYY-MM-DD') AND TO_TIMESTAMP('2025-11-30', 'YYYY-MM-DD')
     AND (
-       (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
-    OR (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
+      __LISTE_IDS__
     )
     
   UNION ALL
@@ -84,11 +82,9 @@ FROM (
   LEFT JOIN rcia.user_attribute attorigin ON usr.id = attorigin.user_id AND attorigin.name = 'originCreation'
   WHERE usr.realm_id != 'master'
     AND evt.type IN ('LOGIN', 'UPDATE_PROFILE')
-    AND TO_TIMESTAMP(evt.event_time / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01 00:00:00', 'YYYY-MM-DD HH24:MI:SS') 
-    AND TO_TIMESTAMP('2025-11-30 00:00:00', 'YYYY-MM-DD HH24:MI:SS')
-     AND (
-       (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
-    OR (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
+    AND TO_TIMESTAMP(evt.event_time / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01', 'YYYY-MM-DD') AND TO_TIMESTAMP('2025-11-30', 'YYYY-MM-DD')
+    AND (
+      __LISTE_IDS__
     )
 ) AS unioned
 ORDER BY first_name, middleName, birthDate, date_evt DESC;
