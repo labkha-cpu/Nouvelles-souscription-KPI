@@ -1,5 +1,4 @@
-
---Formule Excel ="OR (usr.first_name ILIKE " & "'" & H14 & "' AND usr.last_name ILIKE " & "'" & G14 & "'" & " AND att2.value = " & "'" & TEXTE(J14;"aaaa-mm-jj") & "')"
+/* REQUETE RECHERCHE NOM / DATE NAISSANCE */
 SELECT DISTINCT ON (first_name, last_name, birthDate)
   id,
   realm_id,
@@ -46,17 +45,10 @@ FROM (
   LEFT JOIN rcia.user_attribute attphone ON usr.id = attphone.user_id AND attphone.name = 'phoneNumber'
   LEFT JOIN rcia.user_attribute attorigin ON usr.id = attorigin.user_id AND attorigin.name = 'originCreation'
   WHERE usr.realm_id != 'master'
-    AND TO_TIMESTAMP(usr.created_timestamp / 1000)::date BETWEEN 
-        TO_TIMESTAMP('2000-03-01 00:00:00', 'YYYY-MM-DD HH24:MI:SS') 
-        AND TO_TIMESTAMP('2025-11-30 00:00:00', 'YYYY-MM-DD HH24:MI:SS')
+    AND TO_TIMESTAMP(usr.created_timestamp / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01', 'YYYY-MM-DD') AND TO_TIMESTAMP('2025-11-30', 'YYYY-MM-DD')
     AND (
-         (usr.first_name ILIKE 'Jean'  AND usr.last_name ILIKE 'Dupont' AND att2.value = '1980-05-12')
-      OR (usr.first_name ILIKE 'Marie' AND usr.last_name ILIKE 'Durand' AND att2.value = '1992-11-03')
-      OR (usr.first_name ILIKE 'Paul'  AND usr.last_name ILIKE 'Martin' AND att2.value = '1975-07-21')
-     -- OR (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
+      __LISTE_IDS__
     )
-
--- Formule Excel : ="OR (usr.first_name ILIKE " & H1 & "'AND usr.last_name ILIKE " & G1 & "AND att2.value = " & TEXTE(J1;"aaaa-mm-jj") & "')"&","
 
   UNION ALL
 
@@ -90,14 +82,9 @@ FROM (
   LEFT JOIN rcia.user_attribute attorigin ON usr.id = attorigin.user_id AND attorigin.name = 'originCreation'
   WHERE usr.realm_id != 'master'
     AND evt.type IN ('LOGIN', 'UPDATE_PROFILE')
-    AND TO_TIMESTAMP(evt.event_time / 1000)::date BETWEEN 
-        TO_TIMESTAMP('2000-03-01 00:00:00', 'YYYY-MM-DD HH24:MI:SS') 
-        AND TO_TIMESTAMP('2025-11-30 00:00:00', 'YYYY-MM-DD HH24:MI:SS')
+    AND TO_TIMESTAMP(evt.event_time / 1000)::date BETWEEN TO_TIMESTAMP('2000-03-01', 'YYYY-MM-DD') AND TO_TIMESTAMP('2025-11-30', 'YYYY-MM-DD')
     AND (
-         (usr.first_name ILIKE 'Jean'  AND usr.last_name ILIKE 'Dupont' AND att2.value = '1980-05-12')
-      OR (usr.first_name ILIKE 'Marie' AND usr.last_name ILIKE 'Durand' AND att2.value = '1992-11-03')
-      OR (usr.first_name ILIKE 'Paul'  AND usr.last_name ILIKE 'Martin' AND att2.value = '1975-07-21')
-     -- OR (usr.first_name ILIKE 'Jean'  AND attmiddle.value ILIKE 'Pierre' AND att2.value = '1980-05-12')
+      __LISTE_IDS__
     )
 ) AS unioned
 ORDER BY first_name, last_name, birthDate, date_evt DESC;
