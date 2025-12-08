@@ -321,26 +321,30 @@ def main():
     col_dnaiss = get_col_name(df_c, ['date_naissance', 'datenaissance', 'birthdate'])
 
     # Clés NS
-    df_c['key_mail_ciam'] = df_c[col_mail_ciam].astype(str).str.lower().str.strip() if col_mail_ciam else ""
-    df_c['key_val_coord'] = df_c[col_val_coord].astype(str).str.lower().str.strip() if col_val_coord else ""
-    df_c['key_kpep'] = df_c[col_kpep].astype(str).str.strip() if col_kpep else ""
+    # FIX: On utilise .replace('', np.nan) pour invalider les clés vides
+    df_c['key_mail_ciam'] = df_c[col_mail_ciam].astype(str).str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
+    df_c['key_val_coord'] = df_c[col_val_coord].astype(str).str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
+    df_c['key_kpep'] = df_c[col_kpep].astype(str).str.strip().replace('', np.nan) if col_kpep else np.nan
     
     # Clé Identité (Complex & Simple)
-    df_c['key_identite'] = ""
-    df_c['key_identite_simple'] = ""
+    # FIX: On force à NaN si l'identité est incomplète ou vide
+    df_c['key_identite'] = np.nan
+    df_c['key_identite_simple'] = np.nan
     
     if col_nom and col_prenom:
         clean_nom = df_c[col_nom].apply(clean_text)
         clean_prenom = df_c[col_prenom].apply(clean_text)
         
         # Simple : Nom | Prenom
-        df_c['key_identite_simple'] = clean_nom + "|" + clean_prenom
+        # Si nom ou prenom vide, on a '|' ou 'nom|' ou '|prenom', on replace tout cela par NaN
+        df_c['key_identite_simple'] = (clean_nom + "|" + clean_prenom).replace('|', np.nan)
         
         # Full : Nom | Prenom | Date (si dispo)
         if col_dnaiss:
             dt_str = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-            df_c['key_identite'] = clean_nom + "|" + clean_prenom + "|" + dt_str
-            df_c.loc[dt_str == '', 'key_identite'] = ""
+            full_key = clean_nom + "|" + clean_prenom + "|" + dt_str
+            # Invalidation si la date est manquante ou si le nom/prenom est manquant
+            df_c['key_identite'] = full_key.replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
 
     # Préparation Référentiels
     def prep_ref(df, prefix_col):
@@ -353,12 +357,12 @@ def main():
         
         df = df.rename(columns={k:v for k,v in rename_dict.items() if k in df.columns})
         
-        # Clés Techniques
+        # Clés Techniques (replace vide par NaN)
         if f'{prefix_col}_email' in df.columns:
-            df['key_email'] = df[f'{prefix_col}_email'].astype(str).str.lower().str.strip()
+            df['key_email'] = df[f'{prefix_col}_email'].astype(str).str.lower().str.strip().replace('', np.nan)
         
         if f'{prefix_col}_kpep' in df.columns:
-            df['key_kpep'] = df[f'{prefix_col}_kpep'].astype(str).str.strip()
+            df['key_kpep'] = df[f'{prefix_col}_kpep'].astype(str).str.strip().replace('', np.nan)
             
         # Clés Identité (Complex & Simple)
         c_nom = f'{prefix_col}_lastname'
@@ -373,16 +377,18 @@ def main():
             cl_nm = df[c_nom].apply(clean_text)
             cl_pnm = df[c_prenom].apply(clean_text)
             
-            df['key_identite_simple'] = cl_nm + "|" + cl_pnm
+            # Gestion des clés vides
+            df['key_identite_simple'] = (cl_nm + "|" + cl_pnm).replace('|', np.nan)
             
             if c_bd in df.columns:
                 dt_st = pd.to_datetime(df[c_bd], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-                df['key_identite'] = cl_nm + "|" + cl_pnm + "|" + dt_st
+                df['key_identite'] = (cl_nm + "|" + cl_pnm + "|" + dt_st).replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
             
         return df
 
-    df_ref_email = prep_ref(df_cm, 'cm').drop_duplicates('key_email').set_index('key_email') if df_cm is not None else pd.DataFrame()
-    df_ref_kpep = prep_ref(df_ck, 'ck').drop_duplicates('key_kpep').set_index('key_kpep') if df_ck is not None else pd.DataFrame()
+    # Construction des tables de référence avec dropna sur les clés
+    df_ref_email = prep_ref(df_cm, 'cm').dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if df_cm is not None else pd.DataFrame()
+    df_ref_kpep = prep_ref(df_ck, 'ck').dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if df_ck is not None else pd.DataFrame()
     
     # Consolidation Nom/Middle
     refs_identite = []
@@ -517,10 +523,8 @@ if __name__ == "__main__":
     main()
 
 # --- VERSION DU SCRIPT ---
-# Version: 3.3
+# Version: 3.4
 # Date: 08/12/2025
 # Modifications :
-# - Ajout Matching M5 (Identité Simple) pour alignement avec 03_generation.
-# - Implémentation Waterfall pour calcul KPIs précis (Qualité Email, Vide, Non Rapproché).
-# - Ajout indicateurs : Email_Identique_ValCoord, Email_CIAM_Vide, Total_Non_Rapproches.
+# - FIX BUG : Exclusion des clés vides lors du matching KPI (replace '' par NaN)
 # -------------------------
