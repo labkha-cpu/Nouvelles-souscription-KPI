@@ -11,9 +11,7 @@ title KPI Data Quality - Automate (VENV)
 ::
 :: --- HISTORIQUE ---
 :: 1.0 : Version Initiale
-:: 1.1 : Ajout détection dynamique dossier
-:: 1.2 : Alignement Flux Global (2 pauses pour generation SQL progressive)
-:: 1.3 : Ajout Etape 2bis (Reliquat Nom/Middle)
+:: 1.4 : Alignement Noms Fichiers Reliquat (Rech_Nom / Rech_Middle)
 :: =================================================================================
 
 :: --- 1. SE PLACER DANS LE DOSSIER DU SCRIPT ---
@@ -56,7 +54,7 @@ if %ERRORLEVEL% NEQ 0 goto :ErreurPython
 
 echo.
 echo ----------------------------------------------------------
-echo [PAUSE 1] ACTION MANUELLE REQUISE
+echo [PAUSE 1] ACTION MANUELLE REQUISE : EMAILS
 echo ----------------------------------------------------------
 echo.
 echo 1. Allez dans le dossier 'Output'.
@@ -79,7 +77,7 @@ if %ERRORLEVEL% NEQ 0 goto :ErreurPython
 
 echo.
 echo ----------------------------------------------------------
-echo [PAUSE 2] ACTION MANUELLE REQUISE
+echo [PAUSE 2] ACTION MANUELLE REQUISE : KPEP
 echo ----------------------------------------------------------
 echo.
 echo 1. Allez dans le dossier 'Output'.
@@ -102,15 +100,17 @@ if %ERRORLEVEL% NEQ 0 goto :ErreurPython
 
 echo.
 echo ----------------------------------------------------------
-echo [PAUSE 2bis] ACTION MANUELLE REQUISE
+echo [PAUSE 3] ACTION MANUELLE REQUISE : RELIQUAT
 echo ----------------------------------------------------------
 echo.
 echo 1. Allez dans le dossier 'Output'.
-echo 2. Recuperez les requetes SQL complementaires (MiddleName / LastName).
+echo 2. Recuperez les 2 requetes SQL complementaires (MiddleName / LastName).
 echo 3. Executez-les sur votre base de donnees.
-echo 4. Enregistrez les resultats sous '..._NM.csv' (ou _Reliquat.csv) dans 'Input_Data'.
+echo 4. Enregistrez les resultats DANS 'Input_Data' avec ces noms EXACTS :
+echo    - '..._Rech_Nom.csv'   (Pour le resultat LastName)
+echo    - '..._Rech_Middle.csv' (Pour le resultat MiddleName)
 echo.
-echo Une fois les fichiers complementaires deposes (si applicable), appuyez sur une touche.
+echo Une fois les fichiers deposes, appuyez sur une touche.
 echo.
 pause >nul
 
