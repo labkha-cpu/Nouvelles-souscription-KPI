@@ -20,6 +20,8 @@ VERSION | DATE       | DESCRIPTION
 1.1     | 2025-10-XX | Correction accent colonne CIAM_Societe
 1.2     | 2025-12-08 | Ajout fichiers Rech_Nom/Rech_Middle dans la consolidation
                      | Ajout colonnes Email_CIAM et Statut_Rapprochement (NS_CIAM uniquement)
+1.3     | 2025-12-08 | FIX BUG : Exclusion des clés vides lors du matching (replace '' par NaN)
+1.4     | 2025-12-08 | FIX : Normalisation Lowercase systématique des emails pour matching
 ================================================================================
 """
 
@@ -138,9 +140,10 @@ def main():
     df_work = df_ns.copy()
     
     # Création Clés Techniques NS
-    df_work['key_mail'] = df_work[col_mail_ciam].str.lower() if col_mail_ciam else ""
-    df_work['key_val'] = df_work[col_val_coord].str.lower() if col_val_coord else ""
-    df_work['key_kpep'] = df_work[col_kpep] if col_kpep else ""
+    # FIX: On force .str.lower() pour normaliser et on remplace les chaines vides par NaN
+    df_work['key_mail'] = df_work[col_mail_ciam].str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
+    df_work['key_val'] = df_work[col_val_coord].str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
+    df_work['key_kpep'] = df_work[col_kpep].replace('', np.nan) if col_kpep else np.nan
     
     # Création Clés Identité NS
     if col_nom and col_prenom:
@@ -148,20 +151,19 @@ def main():
         df_work['norm_prenom'] = df_work[col_prenom].apply(clean_text)
         
         # Clé Nom+Prenom
-        df_work['key_identite_simple'] = df_work['norm_nom'] + "|" + df_work['norm_prenom']
+        df_work['key_identite_simple'] = (df_work['norm_nom'] + "|" + df_work['norm_prenom']).replace('|', np.nan)
         
         # Clé Nom+Prenom+Date (si date dispo)
         if col_dnaiss:
-            df_work['key_identite_full'] = df_work['norm_nom'] + "|" + df_work['norm_prenom'] + "|" + df_work[col_dnaiss].str[:10]
+            full_key = df_work['norm_nom'] + "|" + df_work['norm_prenom'] + "|" + df_work[col_dnaiss].str[:10]
+            df_work['key_identite_full'] = full_key.replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
         else:
-            df_work['key_identite_full'] = ""
+            df_work['key_identite_full'] = np.nan
     else:
-        df_work['key_identite_simple'] = ""
-        df_work['key_identite_full'] = ""
+        df_work['key_identite_simple'] = np.nan
+        df_work['key_identite_full'] = np.nan
 
     # Préparation Référentiel GLOBAL (CM + CK + Nom + Middle concaténés)
-    # Liste de tuples : (DataFrame, [Liste de candidats pour la colonne Nom])
-    # Pour Middle, on priorise 'middlename' car c'est la colonne qui a matché le 'Nom' NS.
     refs_config = []
     if df_cm is not None: refs_config.append((df_cm, ['last_name', 'lastname', 'nom']))
     if df_ck is not None: refs_config.append((df_ck, ['last_name', 'lastname', 'nom']))
@@ -179,7 +181,7 @@ def main():
             temp['email'] = df_source['email'] if 'email' in df_source.columns else ""
             temp['idkpep'] = df_source['idkpep'] if 'idkpep' in df_source.columns else ""
             
-            # Identité (Avec gestion spécifique MiddleName via nom_candidates)
+            # Identité
             c_nom = get_col_name(df_source, nom_candidates)
             c_pnom = get_col_name(df_source, ['first_name', 'firstname', 'prenom'])
             c_dn = get_col_name(df_source, ['birthdate', 'date_naissance'])
@@ -187,26 +189,29 @@ def main():
             if c_nom and c_pnom:
                 temp['norm_nom'] = df_source[c_nom].apply(clean_text)
                 temp['norm_prenom'] = df_source[c_pnom].apply(clean_text)
-                temp['key_identite_simple'] = temp['norm_nom'] + "|" + temp['norm_prenom']
+                temp['key_identite_simple'] = (temp['norm_nom'] + "|" + temp['norm_prenom']).replace('|', np.nan)
                 if c_dn:
-                    temp['key_identite_full'] = temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + df_source[c_dn].str[:10]
+                    temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + df_source[c_dn].str[:10])
                 else:
-                    temp['key_identite_full'] = ""
+                    temp['key_identite_full'] = np.nan
+            else:
+                temp['key_identite_simple'] = np.nan
+                temp['key_identite_full'] = np.nan
             
-            # Clés techniques
-            temp['key_email'] = temp['email'].str.lower()
-            temp['key_kpep'] = temp['idkpep']
+            # Clés techniques (Normalisation Lowercase + NaN)
+            temp['key_email'] = temp['email'].str.lower().str.strip().replace('', np.nan)
+            temp['key_kpep'] = temp['idkpep'].replace('', np.nan)
             
             normalized_refs.append(temp)
         
         if normalized_refs:
             df_ref_all = pd.concat(normalized_refs, ignore_index=True)
 
-    # Création des lookup tables
-    ref_email = df_ref_all.drop_duplicates('key_email').set_index('key_email') if not df_ref_all.empty else pd.DataFrame()
-    ref_kpep = df_ref_all.drop_duplicates('key_kpep').set_index('key_kpep') if not df_ref_all.empty else pd.DataFrame()
-    ref_identite_full = df_ref_all.drop_duplicates('key_identite_full').set_index('key_identite_full') if not df_ref_all.empty else pd.DataFrame()
-    ref_identite_simple = df_ref_all.drop_duplicates('key_identite_simple').set_index('key_identite_simple') if not df_ref_all.empty else pd.DataFrame()
+    # Création des lookup tables (dropna pour éviter les index NaN)
+    ref_email = df_ref_all.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if not df_ref_all.empty else pd.DataFrame()
+    ref_kpep = df_ref_all.dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if not df_ref_all.empty else pd.DataFrame()
+    ref_identite_full = df_ref_all.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full') if not df_ref_all.empty else pd.DataFrame()
+    ref_identite_simple = df_ref_all.dropna(subset=['key_identite_simple']).drop_duplicates('key_identite_simple').set_index('key_identite_simple') if not df_ref_all.empty else pd.DataFrame()
 
     # --- 3. EXECUTION DES MATCHINGS ---
     print("   🔍 Exécution des méthodes de rapprochement (Email > KPEP > Identité)...")
