@@ -68,20 +68,12 @@ def load_csv(path):
 def normalize_cols(df):
     """Nettoie les noms de colonnes et SUPPRIME LES DOUBLONS + GESTION QUOTES."""
     if df is not None:
-        # 1. Nettoyage basique noms colonnes + suppression quotes dans headers
         df.columns = [c.lower().strip().replace('"', '') for c in df.columns]
-        
-        # 2. Suppression des colonnes parasites
         cols_to_keep = [c for c in df.columns if not c.startswith('unnamed')]
         df = df[cols_to_keep]
-
-        # 3. Dédoublonnage des colonnes
         df = df.loc[:, ~df.columns.duplicated()]
-        
-        # 4. Nettoyage des valeurs (strip espaces ET quotes)
         for col in df.columns:
             df[col] = df[col].astype(str).str.strip().str.replace('"', '', regex=False).replace({'nan': '', 'None': ''})
-            
     return df
 
 def parse_date(ds):
@@ -93,7 +85,6 @@ def find_latest_new_s(directory):
     if not directory.exists(): return None, None
     candidates = []
     excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "_Rech_"]
-    
     for f in directory.glob("*.csv"):
         if any(kw in f.name for kw in excluded_suffixes): continue
         match = re.search(r"(\d{8})", f.name)
@@ -103,17 +94,14 @@ def find_latest_new_s(directory):
         else:
             dt_mtime = datetime.fromtimestamp(f.stat().st_mtime)
             candidates.append({"date": dt_mtime, "prefix": dt_mtime.strftime("%d%m%Y"), "path": f})
-
     if not candidates: return None, None
     best = sorted(candidates, key=lambda x: x["date"], reverse=True)[0]
     return best["path"], best["prefix"]
 
 def get_col_name(df, candidates):
-    """Cherche la première colonne existante parmi une liste de candidats."""
     if df is None: return None
     for col in candidates:
-        if col in df.columns:
-            return col
+        if col in df.columns: return col
     return None
 
 # --- FONCTIONS QUALITÉ ---
@@ -121,6 +109,7 @@ def get_col_name(df, candidates):
 def check_email_quality(df, col_name, label):
     if df is None or col_name is None or col_name not in df.columns: 
         return {label: "Non disponible"}
+    # Normalisation Lowercase explicite
     series = df[col_name].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
     total = len(series)
     vides = (series == '').sum()
@@ -153,32 +142,22 @@ def check_phone_quality(df, col_name, label):
 # --- MAIN ---
 
 def main():
-    if not INPUT_DIR.exists(): 
-        print(f"❌ Dossier {INPUT_DIR} introuvable.")
-        return
-
+    if not INPUT_DIR.exists(): return
     ns_path, prefix = find_latest_new_s(INPUT_DIR)
-    if not ns_path: 
-        print("❌ ECHEC : Aucun fichier source (New_S) trouvé.")
-        return
+    if not ns_path: return
 
     print(f"🚀 Analyse KPI pour le flux : {prefix}")
-    print(f"📂 Fichier SOURCE : {ns_path.name}")
     
-    # Chemins des fichiers potentiels
+    # Chemins
     iehe_path = INPUT_DIR / f"{prefix}_IEHE.csv"
     cm_path = INPUT_DIR / f"{prefix}_CM.csv"
     ck_path = INPUT_DIR / f"{prefix}_CK.csv"
-    
-    # Nouveaux fichiers de recherche manuelle
     nom_path = INPUT_DIR / f"{prefix}_Rech_Nom.csv"
     middle_path = INPUT_DIR / f"{prefix}_Rech_Middle.csv"
 
     # Chargement
     df_ns = normalize_cols(load_csv(ns_path))
-    if df_ns is None:
-        print("❌ Erreur critique : Fichier New_S illisible.")
-        return
+    if df_ns is None: return
 
     df_iehe = normalize_cols(load_csv(iehe_path))
     df_cm = normalize_cols(load_csv(cm_path))
@@ -195,7 +174,7 @@ def main():
         "Rech_Middle": str(middle_path.name) if middle_path.exists() else "⚠️ ABSENT"
     }
     
-    # === 1. ACTIVITÉ (PERIMETRE GLOBAL) ===
+    # === 1. ACTIVITÉ ===
     vol = len(df_ns)
     pres = [c for c in ['code_soc_appart', 'date_effet_adhesion', 'type_assure'] if c in df_ns.columns]
     det_act = df_ns.groupby(pres).size().reset_index(name='count').to_dict('records') if pres else []
@@ -263,7 +242,6 @@ def main():
     tp_ops_data = {"Delai_Saisie_Stats": op_stats, "Conformite_Delai_Effet": tp_met}
 
     # === 3. DOUBLONS ===
-    print("⏳ Calcul des Doublons...")
     dup_raw = {}
     cols_dup_cands = {
         'num_personne': ['num_personne', 'numpersonne'],
@@ -278,7 +256,7 @@ def main():
         if found:
             temp_series = df_ns[found].astype(str).str.strip()
             mask_not_empty = (temp_series != '') & (temp_series.str.lower() != 'nan')
-            series_clean = temp_series[mask_not_empty].str.lower()
+            series_clean = temp_series[mask_not_empty].str.lower() # Déjà lower
             dup_raw[key] = int(series_clean.duplicated(keep='first').sum())
         else:
             dup_raw[key] = 0
@@ -298,10 +276,7 @@ def main():
         
     dup_data = {"Indicateurs": {k: fmt_kpi(v, vol) for k, v in dup_raw.items()}}
 
-    # === 4. MATCHING (PERIMETRE RESTREINT: HORS CONJOINT) ===
-    print("⏳ Calcul du Matching (Fusion CM + CK + Recherche Nom/Date)...")
-    
-    # Filtre CIAM pour les KPIs Matching
+    # === 4. MATCHING ===
     col_type = get_col_name(df_ns, ['type_assure', 'typeassure', 'code_role_personne', 'role'])
     if col_type:
         mask_conjoi = df_ns[col_type].astype(str).str.upper().str.strip() == 'CONJOI'
@@ -312,7 +287,7 @@ def main():
         
     vol_c = len(df_c)
 
-    # Identification colonnes NS
+    # Colonnes NS
     col_mail_ciam = get_col_name(df_c, ['mailciam', 'mail ciam', 'mail_ciam', 'email_ciam'])
     col_val_coord = get_col_name(df_c, ['valeur_coordonnee', 'valeur coordonnee', 'mail', 'email'])
     col_kpep = get_col_name(df_c, ['idkpep', 'id kpep', 'kpep', 'id_kpep'])
@@ -320,77 +295,59 @@ def main():
     col_prenom = get_col_name(df_c, ['prenom', 'firstname'])
     col_dnaiss = get_col_name(df_c, ['date_naissance', 'datenaissance', 'birthdate'])
 
-    # Clés NS
-    # FIX: On utilise .replace('', np.nan) pour invalider les clés vides
+    # Clés NS (Normalisation Lowercase + NaN si vide)
     df_c['key_mail_ciam'] = df_c[col_mail_ciam].astype(str).str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
     df_c['key_val_coord'] = df_c[col_val_coord].astype(str).str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
     df_c['key_kpep'] = df_c[col_kpep].astype(str).str.strip().replace('', np.nan) if col_kpep else np.nan
     
-    # Clé Identité (Complex & Simple)
-    # FIX: On force à NaN si l'identité est incomplète ou vide
     df_c['key_identite'] = np.nan
     df_c['key_identite_simple'] = np.nan
     
     if col_nom and col_prenom:
         clean_nom = df_c[col_nom].apply(clean_text)
         clean_prenom = df_c[col_prenom].apply(clean_text)
-        
-        # Simple : Nom | Prenom
-        # Si nom ou prenom vide, on a '|' ou 'nom|' ou '|prenom', on replace tout cela par NaN
         df_c['key_identite_simple'] = (clean_nom + "|" + clean_prenom).replace('|', np.nan)
-        
-        # Full : Nom | Prenom | Date (si dispo)
         if col_dnaiss:
             dt_str = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
             full_key = clean_nom + "|" + clean_prenom + "|" + dt_str
-            # Invalidation si la date est manquante ou si le nom/prenom est manquant
             df_c['key_identite'] = full_key.replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
 
-    # Préparation Référentiels
+    # Référentiels
     def prep_ref(df, prefix_col):
         if df is None or df.empty: return pd.DataFrame()
         
         rename_dict = {'email': f'{prefix_col}_email', 'idkpep': f'{prefix_col}_kpep', 'realm_id': f'{prefix_col}_realm', 
                        'birthdate': f'{prefix_col}_birthdate', 'last_name': f'{prefix_col}_lastname', 'middleName': f'{prefix_col}_middle', 
-                       'first_name': f'{prefix_col}_firstname', # Ajout pour clé simple
-                       'origincreation': f'{prefix_col}_origin', 'date_evt': f'{prefix_col}_date_evt'}
+                       'first_name': f'{prefix_col}_firstname', 'origincreation': f'{prefix_col}_origin', 'date_evt': f'{prefix_col}_date_evt'}
         
         df = df.rename(columns={k:v for k,v in rename_dict.items() if k in df.columns})
         
-        # Clés Techniques (replace vide par NaN)
+        # Clés Techniques (Normalisation Lowercase + NaN)
         if f'{prefix_col}_email' in df.columns:
             df['key_email'] = df[f'{prefix_col}_email'].astype(str).str.lower().str.strip().replace('', np.nan)
         
         if f'{prefix_col}_kpep' in df.columns:
             df['key_kpep'] = df[f'{prefix_col}_kpep'].astype(str).str.strip().replace('', np.nan)
             
-        # Clés Identité (Complex & Simple)
         c_nom = f'{prefix_col}_lastname'
         c_bd = f'{prefix_col}_birthdate'
         c_prenom = f'{prefix_col}_firstname'
-        
-        # FIX: On utilise le préfixe 'middle' pour détecter le fichier Middle et utiliser la bonne colonne
         if 'middle' in prefix_col and f'{prefix_col}_middle' in df.columns:
             c_nom = f'{prefix_col}_middle'
             
         if c_nom in df.columns and c_prenom in df.columns:
             cl_nm = df[c_nom].apply(clean_text)
             cl_pnm = df[c_prenom].apply(clean_text)
-            
-            # Gestion des clés vides
             df['key_identite_simple'] = (cl_nm + "|" + cl_pnm).replace('|', np.nan)
-            
             if c_bd in df.columns:
                 dt_st = pd.to_datetime(df[c_bd], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
                 df['key_identite'] = (cl_nm + "|" + cl_pnm + "|" + dt_st).replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
             
         return df
 
-    # Construction des tables de référence avec dropna sur les clés
     df_ref_email = prep_ref(df_cm, 'cm').dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if df_cm is not None else pd.DataFrame()
     df_ref_kpep = prep_ref(df_ck, 'ck').dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if df_ck is not None else pd.DataFrame()
     
-    # Consolidation Nom/Middle
     refs_identite = []
     if df_nom is not None: refs_identite.append(prep_ref(df_nom, 'nom'))
     if df_middle is not None: refs_identite.append(prep_ref(df_middle, 'middle'))
@@ -400,7 +357,6 @@ def main():
     
     if refs_identite:
         df_concat = pd.concat(refs_identite, ignore_index=True)
-        # Coalesce des colonnes critiques pour avoir un référentiel unique
         df_concat['final_realm'] = df_concat.get('nom_realm', pd.Series()).combine_first(df_concat.get('middle_realm', pd.Series()))
         df_concat['final_email'] = df_concat.get('nom_email', pd.Series()).combine_first(df_concat.get('middle_email', pd.Series()))
 
@@ -417,63 +373,47 @@ def main():
     m4 = df_c.merge(df_ref_identite, left_on='key_identite', right_index=True, how='left', suffixes=('', '_ident')) if not df_ref_identite.empty else pd.DataFrame()
     m5 = df_c.merge(df_ref_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_simple')) if not df_ref_identite_simple.empty else pd.DataFrame()
 
-    # --- WATERFALL (CONSOLIDATION) ---
-    # On reconstruit la logique de priorité pour déterminer l'Email final et le statut
-    
+    # Waterfall
     df_c['Statut_Match'] = 'Non Rapproché'
     df_c['Email_CIAM_Found'] = np.nan
     
-    # Priorité 5 : Identité Simple
     if not m5.empty and 'final_realm' in m5.columns:
         mask = m5['final_realm'].notna()
         df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
         df_c.loc[mask, 'Email_CIAM_Found'] = m5.loc[mask, 'final_email']
 
-    # Priorité 4 : Identité Complète
     if not m4.empty and 'final_realm' in m4.columns:
         mask = m4['final_realm'].notna()
         df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
         df_c.loc[mask, 'Email_CIAM_Found'] = m4.loc[mask, 'final_email']
 
-    # Priorité 3 : KPEP
     if not m3.empty and 'ck_realm' in m3.columns:
         mask = m3['ck_realm'].notna()
         df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
         df_c.loc[mask, 'Email_CIAM_Found'] = m3.loc[mask, 'ck_email']
 
-    # Priorité 2 : Val Coord
     if not m2.empty and 'cm_realm' in m2.columns:
         mask = m2['cm_realm'].notna()
         df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
         df_c.loc[mask, 'Email_CIAM_Found'] = m2.loc[mask, 'cm_email']
 
-    # Priorité 1 : Mail CIAM
     if not m1.empty and 'cm_realm' in m1.columns:
         mask = m1['cm_realm'].notna()
         df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
         df_c.loc[mask, 'Email_CIAM_Found'] = m1.loc[mask, 'cm_email']
 
-    # --- CALCUL DES KPIS SPECIFIQUES ---
-    
-    # 1. Qualité Email (Strictement Identique)
-    # Comparaison case-insensitive standard (lower vs lower)
+    # KPIs Spécifiques (Matching Lowercase)
     mask_qualite = (df_c['Email_CIAM_Found'].str.lower().str.strip() == df_c['key_val_coord'])
     count_qualite_ok = mask_qualite.sum()
     
-    # 2. Emails Vides (Rapprochés mais email vide/null)
     mask_rapproche = (df_c['Statut_Match'] == 'Rapproché')
     mask_vide = df_c['Email_CIAM_Found'].isna() | (df_c['Email_CIAM_Found'] == '')
     count_email_vide = (mask_rapproche & mask_vide).sum()
     
-    # 3. Non Rapprochés
     count_non_rapproche = (df_c['Statut_Match'] == 'Non Rapproché').sum()
-    
-    # Total Rapprochés pour calculs
     count_rapproche_total = mask_rapproche.sum()
 
-    # Match IEHE
-    refs = set(df_iehe['refperboccn']) if df_iehe is not None and 'refperboccn' in df_iehe.columns else set()
-    match_iehe = df_ns['num_personne'].isin(refs).sum() if 'num_personne' in df_ns.columns else 0
+    match_iehe = df_ns['num_personne'].isin(set(df_iehe['refperboccn'])).sum() if df_iehe is not None and 'num_personne' in df_ns.columns and 'refperboccn' in df_iehe.columns else 0
 
     matching_data = {
         "Indicateurs_Clefs": {
@@ -521,10 +461,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# --- VERSION DU SCRIPT ---
-# Version: 3.4
-# Date: 08/12/2025
-# Modifications :
-# - FIX BUG : Exclusion des clés vides lors du matching KPI (replace '' par NaN)
-# -------------------------
