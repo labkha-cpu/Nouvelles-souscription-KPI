@@ -185,6 +185,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
             if 'email' in df_cm.columns:
                 clean_mails = df_cm['email'].str.replace('"', '', regex=False).str.lower().str.strip().dropna()
                 already_found_emails = set(clean_mails)
+            print(f"      ℹ️  CM.csv détecté : {len(already_found_emails)} emails déjà trouvés.")
         except: pass
 
     ck_path = input_dir / f"{prefix}_CK.csv"
@@ -194,18 +195,24 @@ def run_sql_step(df, input_dir, output_dir, prefix):
             if 'idkpep' in df_ck.columns:
                 clean_kpeps = df_ck['idkpep'].str.replace('"', '', regex=False).str.strip().dropna()
                 already_found_kpeps = set(clean_kpeps)
+            print(f"      ℹ️  CK.csv détecté : {len(already_found_kpeps)} KPEPs déjà trouvés.")
         except: pass
 
     # 4. Masques
+    # On identifie les lignes du fichier source qui sont DEJA résolues
     key_mail = df_ciam[col_mail].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_mail else pd.Series()
     key_val = df_ciam[col_val].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_val else pd.Series()
+    
+    # Masque 1: Trouvé par Email (soit mail ciam, soit val coord match avec le fichier CM)
     mask_found_by_email = (key_mail.isin(already_found_emails)) | (key_val.isin(already_found_emails))
     
+    # Masque 2: Trouvé par KPEP (match avec le fichier CK)
     key_kpep_src = df_ciam[col_kpep].astype(str).str.replace('"', '', regex=False).str.strip() if col_kpep else pd.Series()
     mask_found_by_kpep = key_kpep_src.isin(already_found_kpeps)
 
     # 5. Listes
-    # LISTE 1 : EMAIL (Complète)
+    # LISTE 1 : EMAIL (On prend tout, car c'est la première étape du waterfall)
+    # Note: On pourrait exclure ceux déjà trouvés, mais pour garantir la complétude on relance souvent la liste complète
     email_list = []
     sources_emails = []
     if col_mail: sources_emails.append(df_ciam[col_mail])
@@ -215,15 +222,19 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         email_list = combined.replace('', np.nan).dropna().astype(str).str.strip().unique().tolist()
         email_list = [e for e in email_list if '@' in e]
 
-    # LISTE 2 : KPEP (Non trouvés Email)
+    # LISTE 2 : KPEP (Seulement ceux NON trouvés par Email)
     kpep_list = []
+    excluded_count_kpep = 0
     if col_kpep:
-        df_kpep_target = df_ciam[~mask_found_by_email]
+        df_kpep_target = df_ciam[~mask_found_by_email] # Exclusion Waterfall
+        excluded_count_kpep = len(df_ciam) - len(df_kpep_target)
         kpep_list = df_kpep_target[col_kpep].replace('', np.nan).dropna().str.strip().unique().tolist()
 
-    # LISTE 3 : NOM/DATE (Reliquat Total)
+    # LISTE 3 : NOM/DATE (Reliquat Total: ni Email, ni KPEP)
     nom_date_list = []
-    df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)]
+    excluded_count_nom = 0
+    df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)] # Double Exclusion Waterfall
+    excluded_count_nom = len(df_ciam) - len(df_reliquat)
     
     if col_nom and col_dnaiss and not df_reliquat.empty:
         temp_df = df_reliquat[[col_nom, col_dnaiss]].dropna().copy()
@@ -235,6 +246,15 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.strip().str.replace("'", "''") 
         raw_tuples = list(zip(temp_df['nom_fmt'], temp_df['dt_fmt']))
         nom_date_list = sorted(list(set(raw_tuples)))
+
+    # --- LOGS VOLUMETRIE ---
+    print("\n      📊 [VOLUMETRIE REQUETES]")
+    print(f"      1. Requête EMAIL générée sur : {len(email_list)} adresses (Base complète)")
+    print(f"      2. Requête KPEP générée sur  : {len(kpep_list)} IDs")
+    print(f"         └-> Exclus car trouvés via Email : {excluded_count_kpep}")
+    print(f"      3. Requête NOM générée sur   : {len(nom_date_list)} Couples Nom/Date")
+    print(f"         └-> Exclus car trouvés via Email ou KPEP : {excluded_count_nom}")
+    print("      ------------------------------------------------")
 
     # 6. Écriture
     # Structure Task : (Nom Template, Nom Sortie, Données, Type Donnée)
@@ -251,6 +271,8 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         tpl_path = input_dir / tpl_name
         
         if not data_list:
+            # On ne génère pas de fichier vide pour éviter les erreurs SQL, mais on peut notifier
+            # print(f"      ⚠️  Pas de données pour {output_suffix}")
             continue
             
         if not tpl_path.exists():
@@ -290,12 +312,14 @@ def run_sql_step(df, input_dir, output_dir, prefix):
                 
                 with open(output_dir / out_name, 'w', encoding='utf-8') as f_out: 
                     f_out.write(header + final_sql)
-                print(f"      ✅ Requête générée : Output/{out_name} ({len(data_list)} lignes)")
+                # print(f"      ✅ Requête générée : Output/{out_name} ({len(data_list)} lignes)")
             else:
                 print(f"      ❌ Erreur Template {tpl_name} : Balise __LISTE_IDS__ introuvable.")
 
         except Exception as e:
             print(f"      ❌ Erreur sur {output_suffix} : {e}")
+    
+    print(f"      ✅ Génération SQL terminée (Vérifiez le dossier Output).")
 
 # --- MAIN ---
 
@@ -318,3 +342,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --- VERSION DU SCRIPT ---
+# Version: 1.4
+# Date: 08/12/2025
+# Modifications :
+# - Ajout Logs Volumétrie pour tracer le Waterfall (Cascade).
+# - Clarification des exclusions (CM/CK détectés).
+# -------------------------
