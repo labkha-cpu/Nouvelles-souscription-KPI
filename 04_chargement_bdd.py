@@ -9,7 +9,7 @@ from sqlalchemy.types import Date, DateTime, String, Integer, JSON
 
 # --- HISTORIQUE ---
 # V1.1 : Ajout sys.exit(1) sur échec connexion BDD.
-#        Typage JSON explicite pour la colonne kpi_data.
+# V1.2 : Ajout chargement fichiers Rech_Nom et Rech_Middle.
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -103,7 +103,8 @@ def upload_dataframe(df, table_name, engine, flux_id):
             conn.execute(text(f"DELETE FROM {PG_SCHEMA}.{table_name} WHERE flux_id = :fid"), {"fid": flux_id})
             conn.commit()
         except Exception as e:
-            print(f"   ⚠️ Warning delete {table_name}: {e}")
+            # Si la table n'existe pas encore, ce n'est pas grave
+            pass
 
     # Insertion
     try:
@@ -118,8 +119,7 @@ def upload_dataframe(df, table_name, engine, flux_id):
         print(f"   ✅ {table_name} : {len(df)} lignes insérées.")
     except Exception as e:
         print(f"   ❌ ERREUR insertion {table_name} : {e}")
-        # On peut choisir de bloquer ou non ici. 
-        # Pour l'instant on affiche l'erreur critique.
+        print(f"      Conseil : Si vous avez ajouté des colonnes (ex: Email_CIAM), la table doit être recréée ou modifiée.")
 
 def upload_json(path, table_name, engine, flux_id):
     if not path.exists(): return
@@ -132,11 +132,8 @@ def upload_json(path, table_name, engine, flux_id):
     df = pd.DataFrame([{
         "flux_id": flux_id,
         "date_import": datetime.now(),
-        "kpi_data": data # Pas de json.dumps ici si on utilise le type JSON de SQLAlchemy avec psycopg
+        "kpi_data": data
     }])
-    
-    # Note : Avec certaines versions de sqlalchemy/psycopg, il faut passer un dict Python pour le type JSON,
-    # ou une string pour le type String. Ici on tente le dict direct.
     
     with engine.connect() as conn:
         try:
@@ -173,13 +170,17 @@ def main():
     except Exception as e:
         print(f"❌ ECHEC CONNEXION BDD : {e}")
         print("   Vérifiez le VPN, le mot de passe ou l'adresse.")
-        sys.exit(1) # Arrêt critique
+        sys.exit(1)
 
     print("\n--- INPUTS ---")
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_New_S.csv"), "input_new_s", engine, prefix)
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_IEHE.csv"),  "input_iehe", engine, prefix)
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_CK.csv"),    "input_ck", engine, prefix)
     upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_CM.csv"),    "input_cm", engine, prefix)
+    
+    # Ajout des fichiers de recherche manuelle
+    upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_Rech_Nom.csv"), "input_rech_nom", engine, prefix)
+    upload_dataframe(load_csv_robust(INPUT_DIR / f"{prefix}_Rech_Middle.csv"), "input_rech_middle", engine, prefix)
 
     print("\n--- OUTPUTS CSV ---")
     upload_dataframe(load_csv_robust(OUTPUT_DIR / f"{prefix}_NS_CIAM.csv"), "output_new_s_ciam", engine, prefix)
