@@ -19,7 +19,7 @@ VERSION | DATE       | DESCRIPTION
 1.0     | Initial    | Création du script
 1.1     | 2025-10-XX | Correction accent colonne CIAM_Societe
 1.2     | 2025-12-08 | Ajout fichiers Rech_Nom/Rech_Middle dans la consolidation
-                     | Ajout colonnes Email_CIAM et Statut_Rapprochement
+                     | Ajout colonnes Email_CIAM et Statut_Rapprochement (NS_CIAM uniquement)
 ================================================================================
 """
 
@@ -282,7 +282,7 @@ def main():
     df_work.loc[mask, 'CIAM_Email_Cible'] = m1.loc[mask, 'email']
 
     # --- AJOUTS DEMANDÉS (Email_CIAM & Statut_Rapprochement) ---
-    print("   📝 Ajout des colonnes finales (Email_CIAM, Statut_Rapprochement)...")
+    print("   📝 Ajout des colonnes finales (Email_CIAM, Statut_Rapprochement) au fichier NS_CIAM...")
     
     # 1. Email_CIAM : Copie explicite de l'email trouvé (quelle que soit la méthode)
     df_work['Email_CIAM'] = df_work['CIAM_Email_Cible']
@@ -299,7 +299,7 @@ def main():
     # Sauvegarde NS_CIAM
     f_ciam = OUTPUT_DIR / f"{prefix}_NS_CIAM.csv"
     df_work.to_csv(f_ciam, index=False, sep=',', encoding='utf-8-sig')
-    print(f"   ✅ Fichier généré : {f_ciam.name}")
+    print(f"   ✅ Fichier NS_CIAM généré : {f_ciam.name}")
 
     # --- 5. GENERATION NS_IEHE ---
     # (Pas de changement majeur ici, juste génération classique)
@@ -320,7 +320,7 @@ def main():
             
         f_iehe = OUTPUT_DIR / f"{prefix}_NS_IEHE.csv"
         df_merged.to_csv(f_iehe, index=False, sep=',', encoding='utf-8-sig')
-        print(f"   ✅ Fichier généré : {f_iehe.name}")
+        print(f"   ✅ Fichier NS_IEHE généré : {f_iehe.name}")
     else:
         print("   ⚠️ Impossible de générer NS_IEHE (Fichier IEHE manquant ou colonne ID introuvable)")
 
