@@ -174,7 +174,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
     col_nom = get_col_name(df_ciam, ['nom_long', 'nom', 'lastname'])
     col_dnaiss = get_col_name(df_ciam, ['date_naissance', 'datenaissance', 'birthdate'])
 
-    # 3. Chargement Résultats Existants
+    # 3. Chargement Résultats Existants (Déjà normalisés en lowercase)
     already_found_emails = set()
     already_found_kpeps = set()
     
@@ -183,6 +183,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         try:
             df_cm = pd.read_csv(cm_path, engine='python', dtype=str)
             if 'email' in df_cm.columns:
+                # Normalisation Lowercase ici aussi pour la cohérence
                 clean_mails = df_cm['email'].str.replace('"', '', regex=False).str.lower().str.strip().dropna()
                 already_found_emails = set(clean_mails)
             print(f"      ℹ️  CM.csv détecté : {len(already_found_emails)} emails déjà trouvés.")
@@ -199,30 +200,30 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         except: pass
 
     # 4. Masques
-    # On identifie les lignes du fichier source qui sont DEJA résolues
+    # Normalisation Lowercase des clés de recherche
     key_mail = df_ciam[col_mail].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_mail else pd.Series()
     key_val = df_ciam[col_val].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_val else pd.Series()
     
-    # Masque 1: Trouvé par Email (soit mail ciam, soit val coord match avec le fichier CM)
+    # Masque 1: Trouvé par Email
     mask_found_by_email = (key_mail.isin(already_found_emails)) | (key_val.isin(already_found_emails))
     
-    # Masque 2: Trouvé par KPEP (match avec le fichier CK)
+    # Masque 2: Trouvé par KPEP
     key_kpep_src = df_ciam[col_kpep].astype(str).str.replace('"', '', regex=False).str.strip() if col_kpep else pd.Series()
     mask_found_by_kpep = key_kpep_src.isin(already_found_kpeps)
 
     # 5. Listes
-    # LISTE 1 : EMAIL (On prend tout, car c'est la première étape du waterfall)
-    # Note: On pourrait exclure ceux déjà trouvés, mais pour garantir la complétude on relance souvent la liste complète
+    # LISTE 1 : EMAIL (On prend tout)
     email_list = []
     sources_emails = []
     if col_mail: sources_emails.append(df_ciam[col_mail])
     if col_val: sources_emails.append(df_ciam[col_val])
     if sources_emails:
         combined = pd.concat(sources_emails)
-        email_list = combined.replace('', np.nan).dropna().astype(str).str.strip().unique().tolist()
+        # --- FIX: Ajout de .str.lower() pour normaliser avant d'envoyer au SQL ---
+        email_list = combined.replace('', np.nan).dropna().astype(str).str.strip().str.lower().unique().tolist()
         email_list = [e for e in email_list if '@' in e]
 
-    # LISTE 2 : KPEP (Seulement ceux NON trouvés par Email)
+    # LISTE 2 : KPEP
     kpep_list = []
     excluded_count_kpep = 0
     if col_kpep:
@@ -230,7 +231,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         excluded_count_kpep = len(df_ciam) - len(df_kpep_target)
         kpep_list = df_kpep_target[col_kpep].replace('', np.nan).dropna().str.strip().unique().tolist()
 
-    # LISTE 3 : NOM/DATE (Reliquat Total: ni Email, ni KPEP)
+    # LISTE 3 : NOM/DATE
     nom_date_list = []
     excluded_count_nom = 0
     df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)] # Double Exclusion Waterfall
@@ -249,7 +250,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
 
     # --- LOGS VOLUMETRIE ---
     print("\n      📊 [VOLUMETRIE REQUETES]")
-    print(f"      1. Requête EMAIL générée sur : {len(email_list)} adresses (Base complète)")
+    print(f"      1. Requête EMAIL générée sur : {len(email_list)} adresses (Normalisées Lowercase)")
     print(f"      2. Requête KPEP générée sur  : {len(kpep_list)} IDs")
     print(f"         └-> Exclus car trouvés via Email : {excluded_count_kpep}")
     print(f"      3. Requête NOM générée sur   : {len(nom_date_list)} Couples Nom/Date")
@@ -257,7 +258,6 @@ def run_sql_step(df, input_dir, output_dir, prefix):
     print("      ------------------------------------------------")
 
     # 6. Écriture
-    # Structure Task : (Nom Template, Nom Sortie, Données, Type Donnée)
     tasks = [
         ("00-Export_CIAM_EMAIL_With_Distinct.sql", "00-Export_CIAM_EMAIL_Global", email_list, "simple"),
         ("00-Export_CIAM_KPEP_With_Distinct.sql", "00-Export_CIAM_KPEP_Global", kpep_list, "simple"),
@@ -271,8 +271,6 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         tpl_path = input_dir / tpl_name
         
         if not data_list:
-            # On ne génère pas de fichier vide pour éviter les erreurs SQL, mais on peut notifier
-            # print(f"      ⚠️  Pas de données pour {output_suffix}")
             continue
             
         if not tpl_path.exists():
@@ -282,27 +280,30 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f: base_sql = f.read()
             
+            # --- FIX: PATCH DYNAMIQUE POUR LA BDD (LOWER) ---
+            # Si on traite des emails, on force la comparaison LOWER() sur la colonne BDD dans la requête SQL.
+            # Cela permet de trouver 'Toto@gmail.com' (BDD) en cherchant 'toto@gmail.com' (Source).
+            if "EMAIL" in output_suffix:
+                # Remplacement standard pour un IN clause
+                base_sql = base_sql.replace("usr.email IN", "LOWER(usr.email) IN")
+                # Remplacement de sécurité si jamais le template utilise =
+                base_sql = base_sql.replace("usr.email =", "LOWER(usr.email) =")
+            
             values_str = ""
             if data_type == "simple":
-                # Cas standard : IN ('val1', 'val2')
+                # Cas standard : IN ('val1', 'val2') - Déjà normalisé en amont
                 sanitized_list = [x.replace("'", "''") for x in data_list]
                 values_str = "'" + "','".join(sanitized_list) + "'"
             
             elif "complex" in data_type:
-                # Cas complexe : (Nom ILIKE 'X' AND Date = 'Y') OR (...)
-                # Détermine la colonne cible en fonction du type
                 target_col = "usr.last_name" if data_type == "complex_lastname" else "attmiddle.value"
-                
                 conditions = []
                 for nom, dt in data_list:
-                    # Construction de la condition unitaire
+                    # ILIKE gère déjà l'insensibilité à la casse pour les noms
                     cond = f"({target_col} ILIKE '{nom}' AND att2.value = '{dt}')"
                     conditions.append(cond)
-                
-                # Jointure par OR
                 values_str = "\n      OR ".join(conditions)
             
-            # Injection dans le template
             if "__LISTE_IDS__" in base_sql:
                 final_sql = base_sql.replace("__LISTE_IDS__", values_str)
                 final_sql = final_sql.replace("2025-11-30", today_str)
@@ -312,7 +313,6 @@ def run_sql_step(df, input_dir, output_dir, prefix):
                 
                 with open(output_dir / out_name, 'w', encoding='utf-8') as f_out: 
                     f_out.write(header + final_sql)
-                # print(f"      ✅ Requête générée : Output/{out_name} ({len(data_list)} lignes)")
             else:
                 print(f"      ❌ Erreur Template {tpl_name} : Balise __LISTE_IDS__ introuvable.")
 
@@ -342,11 +342,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# --- VERSION DU SCRIPT ---
-# Version: 1.4
-# Date: 08/12/2025
-# Modifications :
-# - Ajout Logs Volumétrie pour tracer le Waterfall (Cascade).
-# - Clarification des exclusions (CM/CK détectés).
-# -------------------------
