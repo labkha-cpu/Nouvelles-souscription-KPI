@@ -17,10 +17,9 @@ DESCRIPTION : Génération des fichiers de détail enrichis (NS_CIAM, NS_IEHE)
 VERSION | DATE       | DESCRIPTION
 --------------------------------------------------------------------------------
 1.0     | Initial    | Création du script
-1.1     | 2025-10-XX | - Correction nom colonne 'CIAM_Société' -> 'CIAM_Societe'
-                     |   (suppression accent pour compatibilité BDD/SQL)
-                     | - Sécurisation génération NS_IEHE (vérification colonnes)
-                     |   et conservation logique LEFT JOIN.
+1.1     | 2025-10-XX | Correction accent colonne CIAM_Societe
+1.2     | 2025-12-08 | Ajout fichiers Rech_Nom/Rech_Middle dans la consolidation
+                     | Ajout colonnes Email_CIAM et Statut_Rapprochement
 ================================================================================
 """
 
@@ -58,7 +57,8 @@ def load_csv(path):
         try:
             df = pd.read_csv(path, **current_params)
             cols = [c.lower() for c in df.columns]
-            keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm', 'date', 'id', 'refper', 'last_name', 'nom']
+            # Mots-clés pour valider que c'est bien un fichier de données attendu
+            keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm', 'date', 'id', 'refper', 'last_name', 'nom', 'middlename']
             if any(k in c for c in cols for k in keywords):
                 return df
         except: continue
@@ -81,7 +81,8 @@ def get_col_name(df, candidates):
 def find_latest_new_s(directory):
     if not directory.exists(): return None, None
     candidates = []
-    excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "NS_CIAM", "NS_IEHE"]
+    # On exclut les fichiers générés pour ne garder que la source New_S
+    excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "NS_CIAM", "NS_IEHE", "Rech_Nom", "Rech_Middle"]
     for f in directory.glob("*.csv"):
         if any(kw in f.name for kw in excluded_suffixes): continue
         match = re.search(r"(\d{8})", f.name)
@@ -106,15 +107,24 @@ def main():
 
     print(f"📂 Génération des fichiers détails enrichis : {prefix}")
     
-    # Chargement
+    # 1. Chargement des fichiers
+    print("   📥 Chargement des données...")
     df_ns = normalize_cols(load_csv(ns_path))
+    
+    # Fichiers Automatiques
     df_iehe = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_IEHE.csv"))
     df_cm = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_CM.csv"))
     df_ck = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_CK.csv"))
+    
+    # Fichiers Manuels (Rech Nom / Middle)
+    df_nom = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_Rech_Nom.csv"))
+    df_middle = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_Rech_Middle.csv"))
 
-    if df_ns is None: return
+    if df_ns is None: 
+        print("   ❌ Fichier New_S invalide ou vide.")
+        return
 
-    # --- 1. PREPARATION DONNEES POUR MATCHING ---
+    # --- 2. PREPARATION DONNEES POUR MATCHING ---
     print("   ⚙️  Normalisation des identités...")
     
     # Identification Colonnes NS
@@ -142,8 +152,6 @@ def main():
         
         # Clé Nom+Prenom+Date (si date dispo)
         if col_dnaiss:
-            # On garde la date brute (string) si le format est ISO YYYY-MM-DD dans les deux fichiers
-            # Pour être sûr, on prend les 10 premiers caractères
             df_work['key_identite_full'] = df_work['norm_nom'] + "|" + df_work['norm_prenom'] + "|" + df_work[col_dnaiss].str[:10]
         else:
             df_work['key_identite_full'] = ""
@@ -151,36 +159,37 @@ def main():
         df_work['key_identite_simple'] = ""
         df_work['key_identite_full'] = ""
 
-    # Préparation Référentiel GLOBAL (CM + CK concaténés pour la recherche identité)
-    # On a besoin d'un référentiel unique d'identité
-    cols_ref = ['realm_id', 'email', 'idkpep', 'first_name', 'last_name', 'birthdate']
-    
-    refs_list = []
-    if df_cm is not None: refs_list.append(df_cm)
-    if df_ck is not None: refs_list.append(df_ck)
-    
+    # Préparation Référentiel GLOBAL (CM + CK + Nom + Middle concaténés)
+    # Liste de tuples : (DataFrame, [Liste de candidats pour la colonne Nom])
+    # Pour Middle, on priorise 'middlename' car c'est la colonne qui a matché le 'Nom' NS.
+    refs_config = []
+    if df_cm is not None: refs_config.append((df_cm, ['last_name', 'lastname', 'nom']))
+    if df_ck is not None: refs_config.append((df_ck, ['last_name', 'lastname', 'nom']))
+    if df_nom is not None: refs_config.append((df_nom, ['last_name', 'lastname', 'nom']))
+    if df_middle is not None: refs_config.append((df_middle, ['middlename', 'middle_name', 'last_name', 'nom']))
+
     df_ref_all = pd.DataFrame()
-    if refs_list:
-        # On harmonise les colonnes
+    
+    if refs_config:
         normalized_refs = []
-        for df in refs_list:
+        for df_source, nom_candidates in refs_config:
             temp = pd.DataFrame()
             # Mapping
-            temp['realm_id'] = df['realm_id'] if 'realm_id' in df.columns else np.nan
-            temp['email'] = df['email'] if 'email' in df.columns else ""
-            temp['idkpep'] = df['idkpep'] if 'idkpep' in df.columns else ""
+            temp['realm_id'] = df_source['realm_id'] if 'realm_id' in df_source.columns else np.nan
+            temp['email'] = df_source['email'] if 'email' in df_source.columns else ""
+            temp['idkpep'] = df_source['idkpep'] if 'idkpep' in df_source.columns else ""
             
-            # Identité
-            c_nom = get_col_name(df, ['last_name', 'lastname', 'nom'])
-            c_pnom = get_col_name(df, ['first_name', 'firstname', 'prenom'])
-            c_dn = get_col_name(df, ['birthdate', 'date_naissance'])
+            # Identité (Avec gestion spécifique MiddleName via nom_candidates)
+            c_nom = get_col_name(df_source, nom_candidates)
+            c_pnom = get_col_name(df_source, ['first_name', 'firstname', 'prenom'])
+            c_dn = get_col_name(df_source, ['birthdate', 'date_naissance'])
             
             if c_nom and c_pnom:
-                temp['norm_nom'] = df[c_nom].apply(clean_text)
-                temp['norm_prenom'] = df[c_pnom].apply(clean_text)
+                temp['norm_nom'] = df_source[c_nom].apply(clean_text)
+                temp['norm_prenom'] = df_source[c_pnom].apply(clean_text)
                 temp['key_identite_simple'] = temp['norm_nom'] + "|" + temp['norm_prenom']
                 if c_dn:
-                    temp['key_identite_full'] = temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + df[c_dn].str[:10]
+                    temp['key_identite_full'] = temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + df_source[c_dn].str[:10]
                 else:
                     temp['key_identite_full'] = ""
             
@@ -190,16 +199,17 @@ def main():
             
             normalized_refs.append(temp)
         
-        df_ref_all = pd.concat(normalized_refs, ignore_index=True)
+        if normalized_refs:
+            df_ref_all = pd.concat(normalized_refs, ignore_index=True)
 
-    # Création des lookup tables optimisées
+    # Création des lookup tables
     ref_email = df_ref_all.drop_duplicates('key_email').set_index('key_email') if not df_ref_all.empty else pd.DataFrame()
     ref_kpep = df_ref_all.drop_duplicates('key_kpep').set_index('key_kpep') if not df_ref_all.empty else pd.DataFrame()
     ref_identite_full = df_ref_all.drop_duplicates('key_identite_full').set_index('key_identite_full') if not df_ref_all.empty else pd.DataFrame()
     ref_identite_simple = df_ref_all.drop_duplicates('key_identite_simple').set_index('key_identite_simple') if not df_ref_all.empty else pd.DataFrame()
 
-    # --- 2. EXECUTION DES MATCHINGS ---
-    print("   🔍 Exécution des 5 méthodes de rapprochement...")
+    # --- 3. EXECUTION DES MATCHINGS ---
+    print("   🔍 Exécution des méthodes de rapprochement (Email > KPEP > Identité)...")
 
     # 1. Mail CIAM
     m1 = df_work.merge(ref_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m1'))
@@ -212,21 +222,20 @@ def main():
     # 5. Identité Simple (Nom + Prenom) - Match faible
     m5 = df_work.merge(ref_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_m5'))
 
-    # --- 3. CONSOLIDATION ---
+    # --- 4. CONSOLIDATION ---
     
-    # Ajout des colonnes "Top_Match_..." (OUI/NON)
+    # Indicateurs de match par méthode
     df_work['Match_MailCIAM'] = m1['realm_id'].notna().map({True: 'OUI', False: 'NON'})
     df_work['Match_ValCoord'] = m2['realm_id'].notna().map({True: 'OUI', False: 'NON'})
     df_work['Match_KPEP'] = m3['realm_id'].notna().map({True: 'OUI', False: 'NON'})
     df_work['Match_Identite_Complete'] = m4['realm_id'].notna().map({True: 'OUI', False: 'NON'})
     df_work['Match_Identite_NomPrenom'] = m5['realm_id'].notna().map({True: 'OUI', False: 'NON'})
 
-    # Décision finale (Indicateur Rapprochement)
+    # Décision finale (Waterfall)
     df_work['Indicateur_Rapprochement'] = 'CIAM_NON_TROUVE'
     df_work['Methode_Retenue'] = 'AUCUNE'
     
-    # Colonnes cibles à remplir (initialisation object pour éviter warning)
-    # Correction: 'CIAM_Societe' sans accent pour éviter problèmes SQL
+    # Initialisation colonnes cibles
     target_cols = ['CIAM_Source', 'CIAM_Email_Cible', 'CIAM_KPEP_Cible', 'CIAM_Societe']
     for col in target_cols: 
         df_work[col] = np.nan
@@ -253,6 +262,8 @@ def main():
     df_work.loc[mask, 'CIAM_Source'] = 'CK'
     df_work.loc[mask, 'CIAM_Societe'] = m3.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_KPEP_Cible'] = m3.loc[mask, 'key_kpep']
+    # KPEP ramène aussi l'email si présent dans le ref
+    df_work.loc[mask, 'CIAM_Email_Cible'] = m3.loc[mask, 'email']
 
     # Priorité 2 : Val Coord (Email)
     mask = m2['realm_id'].notna()
@@ -270,31 +281,37 @@ def main():
     df_work.loc[mask, 'CIAM_Societe'] = m1.loc[mask, 'realm_id']
     df_work.loc[mask, 'CIAM_Email_Cible'] = m1.loc[mask, 'email']
 
-    # Nettoyage
+    # --- AJOUTS DEMANDÉS (Email_CIAM & Statut_Rapprochement) ---
+    print("   📝 Ajout des colonnes finales (Email_CIAM, Statut_Rapprochement)...")
+    
+    # 1. Email_CIAM : Copie explicite de l'email trouvé (quelle que soit la méthode)
+    df_work['Email_CIAM'] = df_work['CIAM_Email_Cible']
+    
+    # 2. Statut_Rapprochement : Statut explicite Rapproché / Non Rapproché
+    df_work['Statut_Rapprochement'] = df_work['Indicateur_Rapprochement'].apply(
+        lambda x: 'Non Rapproché' if x == 'CIAM_NON_TROUVE' else 'Rapproché'
+    )
+
+    # Nettoyage colonnes techniques
     cols_to_drop = ['key_mail', 'key_val', 'key_kpep', 'norm_nom', 'norm_prenom', 'key_identite_simple', 'key_identite_full']
     df_work.drop(columns=cols_to_drop, inplace=True, errors='ignore')
     
     # Sauvegarde NS_CIAM
     f_ciam = OUTPUT_DIR / f"{prefix}_NS_CIAM.csv"
     df_work.to_csv(f_ciam, index=False, sep=',', encoding='utf-8-sig')
-    print(f"   ✅ {f_ciam.name}")
+    print(f"   ✅ Fichier généré : {f_ciam.name}")
 
-    # --- 4. GENERATION NS_IEHE ---
+    # --- 5. GENERATION NS_IEHE ---
+    # (Pas de changement majeur ici, juste génération classique)
     print("   🔨 Construction NS_IEHE...")
     
-    # On repart du fichier NS propre
-    df_iehe_out = df_ns.copy()
     col_id_ns = get_col_name(df_ns, ['num_personne', 'numpersonne'])
     col_id_iehe = 'refperboccn'
     
     if df_iehe is not None and col_id_ns and col_id_iehe in df_iehe.columns:
-        # Dédoublonnage sur la clé IEHE pour éviter l'explosion du nombre de lignes
         df_iehe_ref = df_iehe.drop_duplicates(subset=[col_id_iehe]).set_index(col_id_iehe)
+        df_merged = df_ns.copy().merge(df_iehe_ref, left_on=col_id_ns, right_index=True, how='left', suffixes=('', '_iehe'))
         
-        # Merge LEFT pour conserver tous les enregistrements NS
-        df_merged = df_iehe_out.merge(df_iehe_ref, left_on=col_id_ns, right_index=True, how='left', suffixes=('', '_iehe'))
-        
-        # Calcul de l'indicateur de présence
         col_temoin = get_col_name(df_iehe, ['idrpp', 'adrmailctc', 'telmbictc'])
         if col_temoin:
             df_merged['IEHE_Present'] = df_merged[col_temoin].notna().map({True: 'OUI', False: 'NON'})
@@ -303,7 +320,7 @@ def main():
             
         f_iehe = OUTPUT_DIR / f"{prefix}_NS_IEHE.csv"
         df_merged.to_csv(f_iehe, index=False, sep=',', encoding='utf-8-sig')
-        print(f"   ✅ {f_iehe.name}")
+        print(f"   ✅ Fichier généré : {f_iehe.name}")
     else:
         print("   ⚠️ Impossible de générer NS_IEHE (Fichier IEHE manquant ou colonne ID introuvable)")
 
