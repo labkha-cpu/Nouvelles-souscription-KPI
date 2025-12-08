@@ -325,41 +325,59 @@ def main():
     df_c['key_val_coord'] = df_c[col_val_coord].astype(str).str.lower().str.strip() if col_val_coord else ""
     df_c['key_kpep'] = df_c[col_kpep].astype(str).str.strip() if col_kpep else ""
     
-    # Clé identité (NomClean + DateYYYY-MM-DD)
+    # Clé Identité (Complex & Simple)
     df_c['key_identite'] = ""
-    if col_nom and col_dnaiss:
+    df_c['key_identite_simple'] = ""
+    
+    if col_nom and col_prenom:
         clean_nom = df_c[col_nom].apply(clean_text)
-        dt_str = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-        df_c['key_identite'] = clean_nom + "|" + dt_str
-        df_c.loc[dt_str == '', 'key_identite'] = ""
+        clean_prenom = df_c[col_prenom].apply(clean_text)
+        
+        # Simple : Nom | Prenom
+        df_c['key_identite_simple'] = clean_nom + "|" + clean_prenom
+        
+        # Full : Nom | Prenom | Date (si dispo)
+        if col_dnaiss:
+            dt_str = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
+            df_c['key_identite'] = clean_nom + "|" + clean_prenom + "|" + dt_str
+            df_c.loc[dt_str == '', 'key_identite'] = ""
 
     # Préparation Référentiels
     def prep_ref(df, prefix_col):
         if df is None or df.empty: return pd.DataFrame()
+        
         rename_dict = {'email': f'{prefix_col}_email', 'idkpep': f'{prefix_col}_kpep', 'realm_id': f'{prefix_col}_realm', 
                        'birthdate': f'{prefix_col}_birthdate', 'last_name': f'{prefix_col}_lastname', 'middleName': f'{prefix_col}_middle', 
+                       'first_name': f'{prefix_col}_firstname', # Ajout pour clé simple
                        'origincreation': f'{prefix_col}_origin', 'date_evt': f'{prefix_col}_date_evt'}
+        
         df = df.rename(columns={k:v for k,v in rename_dict.items() if k in df.columns})
         
-        # Clés
+        # Clés Techniques
         if f'{prefix_col}_email' in df.columns:
             df['key_email'] = df[f'{prefix_col}_email'].astype(str).str.lower().str.strip()
         
         if f'{prefix_col}_kpep' in df.columns:
             df['key_kpep'] = df[f'{prefix_col}_kpep'].astype(str).str.strip()
             
-        # Clé identité ref
+        # Clés Identité (Complex & Simple)
         c_nom = f'{prefix_col}_lastname'
         c_bd = f'{prefix_col}_birthdate'
+        c_prenom = f'{prefix_col}_firstname'
         
         # FIX: On utilise le préfixe 'middle' pour détecter le fichier Middle et utiliser la bonne colonne
         if 'middle' in prefix_col and f'{prefix_col}_middle' in df.columns:
             c_nom = f'{prefix_col}_middle'
             
-        if c_nom in df.columns and c_bd in df.columns:
+        if c_nom in df.columns and c_prenom in df.columns:
             cl_nm = df[c_nom].apply(clean_text)
-            dt_st = pd.to_datetime(df[c_bd], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-            df['key_identite'] = cl_nm + "|" + dt_st
+            cl_pnm = df[c_prenom].apply(clean_text)
+            
+            df['key_identite_simple'] = cl_nm + "|" + cl_pnm
+            
+            if c_bd in df.columns:
+                dt_st = pd.to_datetime(df[c_bd], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
+                df['key_identite'] = cl_nm + "|" + cl_pnm + "|" + dt_st
             
         return df
 
@@ -369,44 +387,83 @@ def main():
     # Consolidation Nom/Middle
     refs_identite = []
     if df_nom is not None: refs_identite.append(prep_ref(df_nom, 'nom'))
-    # FIX: On passe 'middle' pour que la logique du prep_ref fonctionne
     if df_middle is not None: refs_identite.append(prep_ref(df_middle, 'middle'))
     
     df_ref_identite = pd.DataFrame()
+    df_ref_identite_simple = pd.DataFrame()
+    
     if refs_identite:
         df_concat = pd.concat(refs_identite, ignore_index=True)
+        # Coalesce des colonnes critiques pour avoir un référentiel unique
+        df_concat['final_realm'] = df_concat.get('nom_realm', pd.Series()).combine_first(df_concat.get('middle_realm', pd.Series()))
+        df_concat['final_email'] = df_concat.get('nom_email', pd.Series()).combine_first(df_concat.get('middle_email', pd.Series()))
+
         if 'key_identite' in df_concat.columns:
-            # On prend la première colonne realm trouvée ('nom_realm' ou 'middle_realm')
-            df_concat['final_realm'] = df_concat.get('nom_realm', pd.Series()).combine_first(df_concat.get('middle_realm', pd.Series()))
             df_ref_identite = df_concat.dropna(subset=['key_identite', 'final_realm']).drop_duplicates('key_identite').set_index('key_identite')
+        
+        if 'key_identite_simple' in df_concat.columns:
+            df_ref_identite_simple = df_concat.dropna(subset=['key_identite_simple', 'final_realm']).drop_duplicates('key_identite_simple').set_index('key_identite_simple')
 
     # Matching
     m1 = df_c.merge(df_ref_email, left_on='key_mail_ciam', right_index=True, how='left') if not df_ref_email.empty else pd.DataFrame()
     m2 = df_c.merge(df_ref_email, left_on='key_val_coord', right_index=True, how='left', suffixes=('', '_m2')) if not df_ref_email.empty else pd.DataFrame()
     m3 = df_c.merge(df_ref_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_kpep')) if not df_ref_kpep.empty else pd.DataFrame()
     m4 = df_c.merge(df_ref_identite, left_on='key_identite', right_index=True, how='left', suffixes=('', '_ident')) if not df_ref_identite.empty else pd.DataFrame()
+    m5 = df_c.merge(df_ref_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_simple')) if not df_ref_identite_simple.empty else pd.DataFrame()
 
-    # Indicateurs
-    has_match_mail = pd.Series(False, index=df_c.index)
-    has_match_kpep = pd.Series(False, index=df_c.index)
-    has_match_identite = pd.Series(False, index=df_c.index)
-
-    if not m1.empty and 'cm_realm' in m1.columns: has_match_mail |= m1['cm_realm'].notna()
-    if not m2.empty and 'cm_realm' in m2.columns: has_match_mail |= m2['cm_realm'].notna()
-    if not m3.empty and 'ck_realm' in m3.columns: has_match_kpep |= m3['ck_realm'].notna()
-    if not m4.empty and 'final_realm' in m4.columns: has_match_identite |= m4['final_realm'].notna()
+    # --- WATERFALL (CONSOLIDATION) ---
+    # On reconstruit la logique de priorité pour déterminer l'Email final et le statut
     
-    # Alignement
-    has_match_mail.index = df_c.index
-    has_match_kpep.index = df_c.index
-    has_match_identite.index = df_c.index
-
-    # Waterfall
-    count_email = has_match_mail.sum()
-    count_kpep = (has_match_kpep & ~has_match_mail).sum()
-    count_identite = (has_match_identite & ~has_match_mail & ~has_match_kpep).sum()
+    df_c['Statut_Match'] = 'Non Rapproché'
+    df_c['Email_CIAM_Found'] = np.nan
     
-    match_global_count = (has_match_mail | has_match_kpep | has_match_identite).sum()
+    # Priorité 5 : Identité Simple
+    if not m5.empty and 'final_realm' in m5.columns:
+        mask = m5['final_realm'].notna()
+        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
+        df_c.loc[mask, 'Email_CIAM_Found'] = m5.loc[mask, 'final_email']
+
+    # Priorité 4 : Identité Complète
+    if not m4.empty and 'final_realm' in m4.columns:
+        mask = m4['final_realm'].notna()
+        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
+        df_c.loc[mask, 'Email_CIAM_Found'] = m4.loc[mask, 'final_email']
+
+    # Priorité 3 : KPEP
+    if not m3.empty and 'ck_realm' in m3.columns:
+        mask = m3['ck_realm'].notna()
+        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
+        df_c.loc[mask, 'Email_CIAM_Found'] = m3.loc[mask, 'ck_email']
+
+    # Priorité 2 : Val Coord
+    if not m2.empty and 'cm_realm' in m2.columns:
+        mask = m2['cm_realm'].notna()
+        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
+        df_c.loc[mask, 'Email_CIAM_Found'] = m2.loc[mask, 'cm_email']
+
+    # Priorité 1 : Mail CIAM
+    if not m1.empty and 'cm_realm' in m1.columns:
+        mask = m1['cm_realm'].notna()
+        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
+        df_c.loc[mask, 'Email_CIAM_Found'] = m1.loc[mask, 'cm_email']
+
+    # --- CALCUL DES KPIS SPECIFIQUES ---
+    
+    # 1. Qualité Email (Strictement Identique)
+    # Comparaison case-insensitive standard (lower vs lower)
+    mask_qualite = (df_c['Email_CIAM_Found'].str.lower().str.strip() == df_c['key_val_coord'])
+    count_qualite_ok = mask_qualite.sum()
+    
+    # 2. Emails Vides (Rapprochés mais email vide/null)
+    mask_rapproche = (df_c['Statut_Match'] == 'Rapproché')
+    mask_vide = df_c['Email_CIAM_Found'].isna() | (df_c['Email_CIAM_Found'] == '')
+    count_email_vide = (mask_rapproche & mask_vide).sum()
+    
+    # 3. Non Rapprochés
+    count_non_rapproche = (df_c['Statut_Match'] == 'Non Rapproché').sum()
+    
+    # Total Rapprochés pour calculs
+    count_rapproche_total = mask_rapproche.sum()
 
     # Match IEHE
     refs = set(df_iehe['refperboccn']) if df_iehe is not None and 'refperboccn' in df_iehe.columns else set()
@@ -414,13 +471,14 @@ def main():
 
     matching_data = {
         "Indicateurs_Clefs": {
-            "NS_vers_CM_Global": fmt_kpi(match_global_count, vol_c),
-            "Details_Waterfall": {
-                "1_Via_Email": fmt_kpi(count_email, vol_c),
-                "2_Via_KPEP_complement": fmt_kpi(count_kpep, vol_c),
-                "3_Via_Identite_complement": fmt_kpi(count_identite, vol_c)
-            },
+            "Total_Contrats_Analyses": vol_c,
+            "Total_Rapproches_CIAM": fmt_kpi(count_rapproche_total, vol_c),
+            "Total_Non_Rapproches_CIAM": fmt_kpi(count_non_rapproche, vol_c),
             "NS_vers_IEHE": fmt_kpi(match_iehe, vol),
+            "Qualite_Donnees_CIAM": {
+                "Email_Identique_ValCoord": fmt_kpi(count_qualite_ok, count_rapproche_total),
+                "Email_CIAM_Vide_ou_Null": fmt_kpi(count_email_vide, count_rapproche_total)
+            }
         }
     }
 
@@ -459,11 +517,10 @@ if __name__ == "__main__":
     main()
 
 # --- VERSION DU SCRIPT ---
-# Version: 3.2
-# Date: 03/12/2025
+# Version: 3.3
+# Date: 08/12/2025
 # Modifications :
-# - Nettoyage des quotes parasites.
-# - Intégration de la recherche manuelle (Nom & Middle).
-# - Correction libellé 'middle' pour ciblage colonne middleName.
-# - Consolidation des identités pour Waterfall Match.
+# - Ajout Matching M5 (Identité Simple) pour alignement avec 03_generation.
+# - Implémentation Waterfall pour calcul KPIs précis (Qualité Email, Vide, Non Rapproché).
+# - Ajout indicateurs : Email_Identique_ValCoord, Email_CIAM_Vide, Total_Non_Rapproches.
 # -------------------------
