@@ -8,7 +8,7 @@ from datetime import datetime
 import numpy as np
 import warnings
 
-# Pour la connexion BDD
+# Pour la connexion BDD (Optionnel selon environnement)
 try:
     import psycopg
 except ImportError:
@@ -21,7 +21,7 @@ INPUT_DIR = BASE_DIR / "Input_Data"
 OUTPUT_DIR = BASE_DIR / "Output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Config BDD (IEHE)
+# Config BDD (IEHE) - Paramètres conservés
 PG_HOST = "bdd-X0ED0550.alias" 
 PG_PORT = 5559
 PG_DB = "choregie_db"
@@ -232,7 +232,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         excluded_count_kpep = len(df_ciam) - len(df_kpep_target)
         kpep_list = df_kpep_target[col_kpep].replace('', np.nan).dropna().str.strip().unique().tolist()
 
-    # LISTE 3 : NOM + DATE (CORRECTION DATE ICI)
+    # LISTE 3 : NOM + DATE 
     nom_date_list = []
     excluded_count_nom = 0
     df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)] 
@@ -242,9 +242,9 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         temp_df = df_reliquat[[col_nom, col_dnaiss]].dropna().copy()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            # --- FIX DATE : Force dayfirst=True pour le format Français (JJ/MM/AAAA) ---
-            # On convertit d'abord en objet Date (en forçant l'interprétation Jour/Mois)
-            temp_df['dt_obj'] = pd.to_datetime(temp_df[col_dnaiss], dayfirst=True, errors='coerce')
+            # --- FIX DATE : Utilisation du format explicite YYYY-MM-DD ---
+            # Le fichier source utilise YYYY-MM-DD, on le force pour éviter l'inversion
+            temp_df['dt_obj'] = pd.to_datetime(temp_df[col_dnaiss], format='%Y-%m-%d', errors='coerce')
             
             # Ensuite on formate strictement en YYYY-MM-DD pour le SQL (standard ISO DB)
             temp_df['dt_fmt'] = temp_df['dt_obj'].dt.strftime('%Y-%m-%d')
@@ -252,6 +252,8 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         temp_df = temp_df.dropna(subset=['dt_fmt'])
         temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.strip().str.replace("'", "''") 
         
+        # Le 'set' ici assure l'unicité du couple (Nom, Date). 
+        # RYCKEBUSCH (1973) et DUBOIS (1973) seront bien DEUX entrées distinctes.
         raw_tuples = list(zip(temp_df['nom_fmt'], temp_df['dt_fmt']))
         nom_date_list = sorted(list(set(raw_tuples)))
 
@@ -287,6 +289,25 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f: base_sql = f.read()
             
+            # --- PATCH DISTINCT ON (CORRECTIF MAJEUR) ---
+            # Si le template a un DISTINCT restrictif (ex: date seulement), on l'élargit
+            # Ceci permet d'éviter que DUBOIS écrase RYCKEBUSCH
+            if "complex" in data_type:
+                target_field_distinct = "last_name" if "lastname" in data_type else "middleName"
+                
+                # Patch du SELECT DISTINCT ON
+                if "DISTINCT ON (birthDate)" in base_sql:
+                    base_sql = base_sql.replace(
+                        "DISTINCT ON (birthDate)", 
+                        f"DISTINCT ON (first_name, {target_field_distinct}, birthDate)"
+                    )
+                # Patch du ORDER BY (nécessaire pour le DISTINCT ON)
+                if "ORDER BY birthDate" in base_sql:
+                    base_sql = base_sql.replace(
+                        "ORDER BY birthDate", 
+                        f"ORDER BY first_name, {target_field_distinct}, birthDate"
+                    )
+
             if "simple_email" == data_type:
                 base_sql = base_sql.replace("usr.email IN", "LOWER(usr.email) IN")
                 base_sql = base_sql.replace("usr.email =", "LOWER(usr.email) =")
@@ -300,7 +321,8 @@ def run_sql_step(df, input_dir, output_dir, prefix):
                 target_col = "usr.last_name" if data_type == "complex_lastname" else "attmiddle.value"
                 conditions = []
                 for nom, dt in data_list:
-                    # Ici dt est déjà garanti au format YYYY-MM-DD
+                    # Ici dt est maintenant garanti au format YYYY-MM-DD
+                    # On compare en tant que chaîne, ce qui fonctionne si la base stocke la date ou une chaîne ISO
                     cond = f"({target_col} ILIKE '{nom}' AND att2.value = '{dt}')"
                     conditions.append(cond)
                 values_str = "\n      OR ".join(conditions)
