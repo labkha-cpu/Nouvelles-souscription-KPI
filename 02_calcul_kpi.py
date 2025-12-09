@@ -18,7 +18,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # --- UTILITAIRES ---
 
 def clean_text(text):
-    """Nettoie un texte (Majuscules, sans accents, sans tirets)."""
+    """Nettoie un texte (Majuscules, sans accents, sans tirets, lettres uniquement)."""
     if pd.isna(text) or text == '': return ""
     text = str(text).upper()
     text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
@@ -84,7 +84,8 @@ def parse_date(ds):
 def find_latest_new_s(directory):
     if not directory.exists(): return None, None
     candidates = []
-    excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "_Rech_"]
+    # On cherche le fichier source New_S
+    excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "_Rech_", "NS_CIAM", "NS_IEHE"]
     for f in directory.glob("*.csv"):
         if any(kw in f.name for kw in excluded_suffixes): continue
         match = re.search(r"(\d{8})", f.name)
@@ -109,6 +110,7 @@ def get_col_name(df, candidates):
 def check_email_quality(df, col_name, label):
     if df is None or col_name is None or col_name not in df.columns: 
         return {label: "Non disponible"}
+    # Normalisation Lowercase explicite
     series = df[col_name].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
     total = len(series)
     vides = (series == '').sum()
@@ -145,7 +147,7 @@ def main():
     ns_path, prefix = find_latest_new_s(INPUT_DIR)
     if not ns_path: return
 
-    print(f"🚀 Analyse KPI pour le flux : {prefix}")
+    print(f"🚀 Analyse KPI (Complet + Matching Élargi) pour le flux : {prefix}")
     
     # Chemins
     iehe_path = INPUT_DIR / f"{prefix}_IEHE.csv"
@@ -173,7 +175,7 @@ def main():
         "Rech_Middle": str(middle_path.name) if middle_path.exists() else "⚠️ ABSENT"
     }
     
-    # === 1. ACTIVITÉ ===
+    # === 1. ACTIVITÉ (KPI INITIAUX CONSERVÉS) ===
     vol = len(df_ns)
     pres = [c for c in ['code_soc_appart', 'date_effet_adhesion', 'type_assure'] if c in df_ns.columns]
     det_act = df_ns.groupby(pres).size().reset_index(name='count').to_dict('records') if pres else []
@@ -202,7 +204,7 @@ def main():
         "Details": det_act
     }
 
-    # === 2. OPS & TP ===
+    # === 2. OPS & TP (KPI INITIAUX CONSERVÉS) ===
     op_stats = {}
     if 'date_adhesion' in df_ns.columns:
         try: dt_file = datetime.strptime(prefix, "%d%m%Y")
@@ -240,14 +242,14 @@ def main():
 
     tp_ops_data = {"Delai_Saisie_Stats": op_stats, "Conformite_Delai_Effet": tp_met}
 
-    # === 3. DOUBLONS ===
+    # === 3. DOUBLONS (KPI INITIAUX CONSERVÉS) ===
     dup_raw = {}
     cols_dup_cands = {
         'num_personne': ['num_personne', 'numpersonne'],
         'num_ctr_indiv': ['num_ctr_indiv', 'numcontrat', 'contrat'],
         'valeur_coordonnee': ['valeur_coordonnee', 'valeur coordonnee', 'mail', 'email'],
         'idkpep': ['idkpep', 'kpep', 'id_kpep'],
-        'mail_ciam': ['mailciam', 'mail ciam', 'mail_ciam', 'email_ciam']
+        'mail_ciam': ['mail_ciam', 'mail ciam', 'email_ciam']
     }
     
     for key, cands in cols_dup_cands.items():
@@ -255,7 +257,7 @@ def main():
         if found:
             temp_series = df_ns[found].astype(str).str.strip()
             mask_not_empty = (temp_series != '') & (temp_series.str.lower() != 'nan')
-            series_clean = temp_series[mask_not_empty].str.lower() # Déjà lower
+            series_clean = temp_series[mask_not_empty].str.lower()
             dup_raw[key] = int(series_clean.duplicated(keep='first').sum())
         else:
             dup_raw[key] = 0
@@ -263,10 +265,10 @@ def main():
     comp = ['nom_long', 'prenom', 'date_naissance']
     real_comp = [get_col_name(df_ns, [c]) for c in comp]
     if all(real_comp):
-        col_nom, col_prenom, col_date = real_comp[0], real_comp[1], real_comp[2]
-        s_nom = df_ns[col_nom].astype(str).str.strip().str.lower()
-        s_prenom = df_ns[col_prenom].astype(str).str.strip().str.lower()
-        s_date = df_ns[col_date].astype(str).str.strip() 
+        col_nm, col_pnm, col_dt = real_comp[0], real_comp[1], real_comp[2]
+        s_nom = df_ns[col_nm].astype(str).str.strip().str.lower()
+        s_prenom = df_ns[col_pnm].astype(str).str.strip().str.lower()
+        s_date = df_ns[col_dt].astype(str).str.strip() 
         composite_series = s_nom + '|' + s_prenom + '|' + s_date
         mask_valid = (s_nom != '') & (s_prenom != '') & (s_nom != 'nan')
         dup_raw['nom+prenom+datenaissance'] = int(composite_series[mask_valid].duplicated(keep='first').sum())
@@ -275,18 +277,22 @@ def main():
         
     dup_data = {"Indicateurs": {k: fmt_kpi(v, vol) for k, v in dup_raw.items()}}
 
-    # === 4. MATCHING ===
+    # === 4. MATCHING (MISE A JOUR MAJEURE + FILTRAGE) ===
+    
+    # 4.1. Filtrage Population (Exclure Conjoints)
     col_type = get_col_name(df_ns, ['type_assure', 'typeassure', 'code_role_personne', 'role'])
+    
     if col_type:
-        mask_conjoi = df_ns[col_type].astype(str).str.upper().str.strip() == 'CONJOI'
+        mask_conjoi = df_ns[col_type].astype(str).str.upper().str.contains('CONJOI')
+        # On ne garde que les NON conjoints pour le calcul KPI matching
         df_c = df_ns[~mask_conjoi].copy()
         df_c.reset_index(drop=True, inplace=True)
     else:
         df_c = df_ns.copy()
         
-    vol_c = len(df_c)
+    vol_c = len(df_c) # Volume Eligibles
 
-    # Colonnes NS
+    # 4.2. Identification Colonnes
     col_mail_ciam = get_col_name(df_c, ['mailciam', 'mail ciam', 'mail_ciam', 'email_ciam'])
     col_val_coord = get_col_name(df_c, ['valeur_coordonnee', 'valeur coordonnee', 'mail', 'email'])
     col_kpep = get_col_name(df_c, ['idkpep', 'id kpep', 'kpep', 'id_kpep'])
@@ -294,148 +300,156 @@ def main():
     col_prenom = get_col_name(df_c, ['prenom', 'firstname'])
     col_dnaiss = get_col_name(df_c, ['date_naissance', 'datenaissance', 'birthdate'])
 
-    # Clés NS (Normalisation Lowercase + NaN si vide)
-    df_c['key_mail_ciam'] = df_c[col_mail_ciam].astype(str).str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
-    df_c['key_val_coord'] = df_c[col_val_coord].astype(str).str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
-    df_c['key_kpep'] = df_c[col_kpep].astype(str).str.strip().replace('', np.nan) if col_kpep else np.nan
+    # 4.3. Création Clés NS (Lower Case systématique)
+    df_c['key_mail'] = df_c[col_mail_ciam].str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
+    df_c['key_val'] = df_c[col_val_coord].str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
+    df_c['key_kpep'] = df_c[col_kpep].replace('', np.nan) if col_kpep else np.nan
     
-    df_c['key_identite'] = np.nan
-    df_c['key_identite_simple'] = np.nan
+    df_c['norm_nom'] = df_c[col_nom].apply(clean_text) if col_nom else ""
+    df_c['norm_prenom'] = df_c[col_prenom].apply(clean_text) if col_prenom else ""
     
-    if col_nom and col_prenom:
-        clean_nom = df_c[col_nom].apply(clean_text)
-        clean_prenom = df_c[col_prenom].apply(clean_text)
-        df_c['key_identite_simple'] = (clean_nom + "|" + clean_prenom).replace('|', np.nan)
-        if col_dnaiss:
-            # FIX WARNING DATE: On désactive le warning si le format est explicitement géré
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                dt_str = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-            full_key = clean_nom + "|" + clean_prenom + "|" + dt_str
-            df_c['key_identite'] = full_key.replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
+    if col_dnaiss:
+        # Clé Nom + Date (Sans Prénom) pour recherche élargie
+        df_c['dt_fmt'] = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+        df_c['key_nom_date'] = (df_c['norm_nom'] + "|" + df_c['dt_fmt']).replace(r'^\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
+        # Clé Identité Complète
+        df_c['key_identite_full'] = (df_c['norm_nom'] + "|" + df_c['norm_prenom'] + "|" + df_c['dt_fmt']).replace(r'\|\|', np.nan, regex=True)
+    else:
+        df_c['key_nom_date'] = np.nan
+        df_c['key_identite_full'] = np.nan
 
-    # Référentiels
-    def prep_ref(df, prefix_col):
-        if df is None or df.empty: return pd.DataFrame()
+    df_c['key_identite_simple'] = (df_c['norm_nom'] + "|" + df_c['norm_prenom']).replace('|', np.nan)
+
+    # 4.4. Préparation Référentiels
+    def prep_ref(df_in):
+        if df_in is None or df_in.empty: return pd.DataFrame()
+        temp = pd.DataFrame()
+        # On ne mappe que les champs utiles pour le match
+        cols_map = {'realm_id': 'realm_id', 'email': 'email', 'idkpep': 'idkpep'}
+        for c_out, c_in in cols_map.items():
+            if c_in in df_in.columns: temp[c_out] = df_in[c_in]
         
-        rename_dict = {'email': f'{prefix_col}_email', 'idkpep': f'{prefix_col}_kpep', 'realm_id': f'{prefix_col}_realm', 
-                       'birthdate': f'{prefix_col}_birthdate', 'last_name': f'{prefix_col}_lastname', 'middleName': f'{prefix_col}_middle', 
-                       'first_name': f'{prefix_col}_firstname', 'origincreation': f'{prefix_col}_origin', 'date_evt': f'{prefix_col}_date_evt'}
+        # Clés Techniques Ref
+        if 'email' in temp.columns: 
+            temp['key_email'] = temp['email'].str.lower().str.strip().replace('', np.nan)
+        if 'idkpep' in temp.columns: 
+            temp['key_kpep'] = temp['idkpep'].replace('', np.nan)
+
+        # Clés Identité Ref
+        c_r_nom = get_col_name(df_in, ['last_name', 'lastname', 'nom', 'middlename'])
+        c_r_pnom = get_col_name(df_in, ['first_name', 'firstname', 'prenom'])
+        c_r_date = get_col_name(df_in, ['birthdate', 'date_naissance'])
         
-        df = df.rename(columns={k:v for k,v in rename_dict.items() if k in df.columns})
+        temp['norm_nom'] = df_in[c_r_nom].apply(clean_text) if c_r_nom else ""
+        temp['norm_prenom'] = df_in[c_r_pnom].apply(clean_text) if c_r_pnom else ""
         
-        # Clés Techniques (Normalisation Lowercase + NaN)
-        if f'{prefix_col}_email' in df.columns:
-            df['key_email'] = df[f'{prefix_col}_email'].astype(str).str.lower().str.strip().replace('', np.nan)
+        if c_r_date:
+            dt_r = pd.to_datetime(df_in[c_r_date], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+            temp['key_nom_date'] = (temp['norm_nom'] + "|" + dt_r)
+            temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + dt_r)
         
-        if f'{prefix_col}_kpep' in df.columns:
-            df['key_kpep'] = df[f'{prefix_col}_kpep'].astype(str).str.strip().replace('', np.nan)
-            
-        c_nom = f'{prefix_col}_lastname'
-        c_bd = f'{prefix_col}_birthdate'
-        c_prenom = f'{prefix_col}_firstname'
-        if 'middle' in prefix_col and f'{prefix_col}_middle' in df.columns:
-            c_nom = f'{prefix_col}_middle'
-            
-        if c_nom in df.columns and c_prenom in df.columns:
-            cl_nm = df[c_nom].apply(clean_text)
-            cl_pnm = df[c_prenom].apply(clean_text)
-            df['key_identite_simple'] = (cl_nm + "|" + cl_pnm).replace('|', np.nan)
-            if c_bd in df.columns:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    dt_st = pd.to_datetime(df[c_bd], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
-                df['key_identite'] = (cl_nm + "|" + cl_pnm + "|" + dt_st).replace(r'^\|\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
-            
-        return df
+        temp['key_identite_simple'] = (temp['norm_nom'] + "|" + temp['norm_prenom'])
+        return temp
 
-    df_ref_email = prep_ref(df_cm, 'cm').dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if df_cm is not None else pd.DataFrame()
-    df_ref_kpep = prep_ref(df_ck, 'ck').dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if df_ck is not None else pd.DataFrame()
+    # Prépa Sources
+    ref_cm = prep_ref(df_cm)
+    ref_ck = prep_ref(df_ck)
+    ref_nom = prep_ref(df_nom)
+    ref_middle = prep_ref(df_middle)
     
-    refs_identite = []
-    if df_nom is not None: refs_identite.append(prep_ref(df_nom, 'nom'))
-    if df_middle is not None: refs_identite.append(prep_ref(df_middle, 'middle'))
+    # Agrégation des refs identité (CM + CK + Nom + Middle)
+    all_refs = pd.concat([ref_cm, ref_ck, ref_nom, ref_middle], ignore_index=True)
+
+    # Indexes
+    idx_email = ref_cm.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if not ref_cm.empty else pd.DataFrame()
+    idx_kpep = ref_ck.dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if not ref_ck.empty else pd.DataFrame()
+    idx_identite = all_refs.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full') if not all_refs.empty else pd.DataFrame()
     
-    df_ref_identite = pd.DataFrame()
-    df_ref_identite_simple = pd.DataFrame()
+    # Indexes Recherche Élargie (Sans Prénom)
+    idx_nom = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date') if not ref_nom.empty else pd.DataFrame()
+    idx_middle = ref_middle.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date') if not ref_middle.empty else pd.DataFrame()
+
+    # 4.5. WATERFALL MATCHING
+    # Initialisation
+    df_c['Found'] = False
+    df_c['Methode'] = 'Aucune'
+
+    # Etape 1: Mail CIAM (Priorité Absolue)
+    if not idx_email.empty and 'realm_id' in idx_email.columns:
+        m = df_c.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        df_c.loc[mask, 'Found'] = True
+        df_c.loc[mask, 'Methode'] = 'Mail_CIAM'
+
+    # Etape 2: Val Coord (Sur non trouvé)
+    if not idx_email.empty and 'realm_id' in idx_email.columns:
+        mask_remain = ~df_c['Found']
+        m = df_c[mask_remain].merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        found_idx = df_c[mask_remain][mask].index
+        df_c.loc[found_idx, 'Found'] = True
+        df_c.loc[found_idx, 'Methode'] = 'Val_Coord'
+
+    # Etape 3: KPEP
+    if not idx_kpep.empty and 'realm_id' in idx_kpep.columns:
+        mask_remain = ~df_c['Found']
+        m = df_c[mask_remain].merge(idx_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        found_idx = df_c[mask_remain][mask].index
+        df_c.loc[found_idx, 'Found'] = True
+        df_c.loc[found_idx, 'Methode'] = 'KPEP'
+
+    # Etape 4: Identité Complète (Nom+Prenom+Date)
+    if not idx_identite.empty and 'realm_id' in idx_identite.columns:
+        mask_remain = ~df_c['Found']
+        m = df_c[mask_remain].merge(idx_identite, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        found_idx = df_c[mask_remain][mask].index
+        df_c.loc[found_idx, 'Found'] = True
+        df_c.loc[found_idx, 'Methode'] = 'Identite_Full'
+
+    # Etape 5: Recherche Élargie (Last Name sans Prénom) - NOUVEAU
+    if not idx_nom.empty and 'realm_id' in idx_nom.columns:
+        mask_remain = ~df_c['Found']
+        m = df_c[mask_remain].merge(idx_nom, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        found_idx = df_c[mask_remain][mask].index
+        df_c.loc[found_idx, 'Found'] = True
+        df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Nom'
+
+    # Etape 6: Recherche Élargie (Middle Name sans Prénom) - NOUVEAU
+    if not idx_middle.empty and 'realm_id' in idx_middle.columns:
+        mask_remain = ~df_c['Found']
+        m = df_c[mask_remain].merge(idx_middle, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
+        mask = m['realm_id_m'].notna()
+        found_idx = df_c[mask_remain][mask].index
+        df_c.loc[found_idx, 'Found'] = True
+        df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Middle'
+
+    # KPIs Matching
+    count_rapproche = df_c['Found'].sum()
+    count_non_rapproche = vol_c - count_rapproche
     
-    if refs_identite:
-        df_concat = pd.concat(refs_identite, ignore_index=True)
-        df_concat['final_realm'] = df_concat.get('nom_realm', pd.Series()).combine_first(df_concat.get('middle_realm', pd.Series()))
-        df_concat['final_email'] = df_concat.get('nom_email', pd.Series()).combine_first(df_concat.get('middle_email', pd.Series()))
+    # Détail par méthode
+    raw_methods = df_c[df_c['Found']]['Methode'].value_counts().to_dict()
+    # On convertit les numpy int en int natifs pour JSON
+    detail_methodes = {k: int(v) for k, v in raw_methods.items()}
 
-        if 'key_identite' in df_concat.columns:
-            df_ref_identite = df_concat.dropna(subset=['key_identite', 'final_realm']).drop_duplicates('key_identite').set_index('key_identite')
-        
-        if 'key_identite_simple' in df_concat.columns:
-            df_ref_identite_simple = df_concat.dropna(subset=['key_identite_simple', 'final_realm']).drop_duplicates('key_identite_simple').set_index('key_identite_simple')
-
-    # Matching
-    m1 = df_c.merge(df_ref_email, left_on='key_mail_ciam', right_index=True, how='left') if not df_ref_email.empty else pd.DataFrame()
-    m2 = df_c.merge(df_ref_email, left_on='key_val_coord', right_index=True, how='left', suffixes=('', '_m2')) if not df_ref_email.empty else pd.DataFrame()
-    m3 = df_c.merge(df_ref_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_kpep')) if not df_ref_kpep.empty else pd.DataFrame()
-    m4 = df_c.merge(df_ref_identite, left_on='key_identite', right_index=True, how='left', suffixes=('', '_ident')) if not df_ref_identite.empty else pd.DataFrame()
-    m5 = df_c.merge(df_ref_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_simple')) if not df_ref_identite_simple.empty else pd.DataFrame()
-
-    # Waterfall
-    df_c['Statut_Match'] = 'Non Rapproché'
-    # FIX TYPE: Initialisation explicite en object pour accepter les strings plus tard
-    df_c['Email_CIAM_Found'] = np.nan
-    df_c['Email_CIAM_Found'] = df_c['Email_CIAM_Found'].astype('object')
-    
-    if not m5.empty and 'final_realm' in m5.columns:
-        mask = m5['final_realm'].notna()
-        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
-        df_c.loc[mask, 'Email_CIAM_Found'] = m5.loc[mask, 'final_email']
-
-    if not m4.empty and 'final_realm' in m4.columns:
-        mask = m4['final_realm'].notna()
-        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
-        df_c.loc[mask, 'Email_CIAM_Found'] = m4.loc[mask, 'final_email']
-
-    if not m3.empty and 'ck_realm' in m3.columns:
-        mask = m3['ck_realm'].notna()
-        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
-        df_c.loc[mask, 'Email_CIAM_Found'] = m3.loc[mask, 'ck_email']
-
-    if not m2.empty and 'cm_realm' in m2.columns:
-        mask = m2['cm_realm'].notna()
-        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
-        df_c.loc[mask, 'Email_CIAM_Found'] = m2.loc[mask, 'cm_email']
-
-    if not m1.empty and 'cm_realm' in m1.columns:
-        mask = m1['cm_realm'].notna()
-        df_c.loc[mask, 'Statut_Match'] = 'Rapproché'
-        df_c.loc[mask, 'Email_CIAM_Found'] = m1.loc[mask, 'cm_email']
-
-    # KPIs Spécifiques (Matching Lowercase)
-    # On caste en str pour éviter les problèmes de type si la colonne est restée float
-    mask_qualite = (df_c['Email_CIAM_Found'].astype(str).str.lower().str.strip() == df_c['key_val_coord'])
-    count_qualite_ok = mask_qualite.sum()
-    
-    mask_rapproche = (df_c['Statut_Match'] == 'Rapproché')
-    mask_vide = df_c['Email_CIAM_Found'].isna() | (df_c['Email_CIAM_Found'] == '')
-    count_email_vide = (mask_rapproche & mask_vide).sum()
-    
-    count_non_rapproche = (df_c['Statut_Match'] == 'Non Rapproché').sum()
-    count_rapproche_total = mask_rapproche.sum()
-
+    # Match IEHE (hors population ciblée car IEHE global)
     match_iehe = df_ns['num_personne'].isin(set(df_iehe['refperboccn'])).sum() if df_iehe is not None and 'num_personne' in df_ns.columns and 'refperboccn' in df_iehe.columns else 0
 
     matching_data = {
         "Indicateurs_Clefs": {
-            "Total_Contrats_Analyses": vol_c,
-            "Total_Rapproches_CIAM": fmt_kpi(count_rapproche_total, vol_c),
+            "Population_Analysee_Eligible": vol_c,
+            "Population_Exclue_Conjoints": vol - vol_c,
+            "Total_Rapproches_CIAM": fmt_kpi(count_rapproche, vol_c),
             "Total_Non_Rapproches_CIAM": fmt_kpi(count_non_rapproche, vol_c),
-            "NS_vers_IEHE": fmt_kpi(match_iehe, vol),
-            "Qualite_Donnees_CIAM": {
-                "Email_Identique_ValCoord": fmt_kpi(count_qualite_ok, count_rapproche_total),
-                "Email_CIAM_Vide_ou_Null": fmt_kpi(count_email_vide, count_rapproche_total)
-            }
+            "Detail_Rapprochement_Methode": detail_methodes,
+            "NS_vers_IEHE_Global": fmt_kpi(match_iehe, vol)
         }
     }
 
-    # === 5. QUALITÉ CONTACT ===
+    # === 5. QUALITÉ CONTACT (KPI INITIAUX CONSERVÉS) ===
     ct_met = {"_Glossaire": "Syntaxe emails/téléphones + Profils orphelins."}
     
     tgts = [
