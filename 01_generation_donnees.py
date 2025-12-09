@@ -40,7 +40,6 @@ def connect_pg(host, port, db):
         return None
 
 def connect_iehe_auto():
-    # Liste de tentatives de connexion (Failover)
     hosts = ["bdd-X0ED0550.alias", "100.54.41.6"]
     ports = [5559, 5432]
     dbs = ["choregie_db", "postgres"]
@@ -134,7 +133,6 @@ def run_iehe_step(df_ns, output_iehe_path):
         print("      ❌ Echec Connexion BDD IEHE.")
         return
     
-    # Sécurisation SQL Injection simple
     safe_ids = [str(i).replace("'", "") for i in ids]
     
     sql = f"""
@@ -166,7 +164,7 @@ def run_iehe_step(df_ns, output_iehe_path):
 def run_sql_step(df, input_dir, output_dir, prefix):
     print(f"   🔨 Génération Requêtes SQL (Mode Cascade + LowerCase)...")
     
-    # 1. Filtre CIAM (Exclusion des Conjoints si colonne présente)
+    # 1. Filtre CIAM
     df_ciam = df.copy()
     col_type = get_col_name(df_ciam, ['type_assure', 'typeassure', 'code_role_personne', 'role'])
     if col_type:
@@ -180,11 +178,10 @@ def run_sql_step(df, input_dir, output_dir, prefix):
     col_nom = get_col_name(df_ciam, ['nom_long', 'nom', 'lastname'])
     col_dnaiss = get_col_name(df_ciam, ['date_naissance', 'datenaissance', 'birthdate'])
 
-    # 3. Chargement Résultats Existants (Normalisation stricte Lowercase)
+    # 3. Chargement Résultats Existants
     already_found_emails = set()
     already_found_kpeps = set()
     
-    # Chargement CM (Emails trouvés)
     cm_path = input_dir / f"{prefix}_CM.csv"
     if cm_path.exists():
         try:
@@ -196,7 +193,6 @@ def run_sql_step(df, input_dir, output_dir, prefix):
             print(f"      ℹ️  CM.csv : {len(already_found_emails)} emails exclus.")
         except: pass
 
-    # Chargement CK (KPEPs trouvés)
     ck_path = input_dir / f"{prefix}_CK.csv"
     if ck_path.exists():
         try:
@@ -208,31 +204,27 @@ def run_sql_step(df, input_dir, output_dir, prefix):
             print(f"      ℹ️  CK.csv : {len(already_found_kpeps)} KPEPs exclus.")
         except: pass
 
-    # 4. Création des Masques d'Exclusion (Waterfall)
-    
-    # Masque 1: Trouvé par Email (Comparaison Lowercase)
+    # 4. Création Masques d'Exclusion
     key_mail = df_ciam[col_mail].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_mail else pd.Series()
     key_val = df_ciam[col_val].astype(str).str.replace('"', '', regex=False).str.lower().str.strip() if col_val else pd.Series()
     mask_found_by_email = (key_mail.isin(already_found_emails)) | (key_val.isin(already_found_emails))
     
-    # Masque 2: Trouvé par KPEP
     key_kpep_src = df_ciam[col_kpep].astype(str).str.replace('"', '', regex=False).str.strip() if col_kpep else pd.Series()
     mask_found_by_kpep = key_kpep_src.isin(already_found_kpeps)
 
-    # 5. Génération des Listes de Recherche
+    # 5. Listes de Recherche
     
-    # --- LISTE 1 : EMAIL (Tous les candidats) ---
+    # LISTE 1 : EMAIL
     email_list = []
     sources_emails = []
     if col_mail: sources_emails.append(df_ciam[col_mail])
     if col_val: sources_emails.append(df_ciam[col_val])
     if sources_emails:
         combined = pd.concat(sources_emails)
-        # Normalisation Lowercase pour la requête SQL
         email_list = combined.replace('', np.nan).dropna().astype(str).str.strip().str.lower().unique().tolist()
         email_list = [e for e in email_list if '@' in e]
 
-    # --- LISTE 2 : KPEP (Ceux non trouvés par email) ---
+    # LISTE 2 : KPEP
     kpep_list = []
     excluded_count_kpep = 0
     if col_kpep:
@@ -240,9 +232,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         excluded_count_kpep = len(df_ciam) - len(df_kpep_target)
         kpep_list = df_kpep_target[col_kpep].replace('', np.nan).dropna().str.strip().unique().tolist()
 
-    # --- LISTE 3 : NOM + DATE (RELIQUAT) ---
-    # Recherche élargie : On prend le reliquat (Ni mail, Ni KPEP trouvé)
-    # On génère des couples (Last Name, BirthDate) sans Prénom
+    # LISTE 3 : NOM + DATE (CORRECTION DATE ICI)
     nom_date_list = []
     excluded_count_nom = 0
     df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)] 
@@ -252,14 +242,16 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         temp_df = df_reliquat[[col_nom, col_dnaiss]].dropna().copy()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            # Format date YYYY-MM-DD
-            temp_df['dt_fmt'] = pd.to_datetime(temp_df[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+            # --- FIX DATE : Force dayfirst=True pour le format Français (JJ/MM/AAAA) ---
+            # On convertit d'abord en objet Date (en forçant l'interprétation Jour/Mois)
+            temp_df['dt_obj'] = pd.to_datetime(temp_df[col_dnaiss], dayfirst=True, errors='coerce')
+            
+            # Ensuite on formate strictement en YYYY-MM-DD pour le SQL (standard ISO DB)
+            temp_df['dt_fmt'] = temp_df['dt_obj'].dt.strftime('%Y-%m-%d')
         
         temp_df = temp_df.dropna(subset=['dt_fmt'])
-        # Echappement simple des apostrophes SQL
         temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.strip().str.replace("'", "''") 
         
-        # On ne garde que les couples uniques (Nom, Date)
         raw_tuples = list(zip(temp_df['nom_fmt'], temp_df['dt_fmt']))
         nom_date_list = sorted(list(set(raw_tuples)))
 
@@ -272,9 +264,7 @@ def run_sql_step(df, input_dir, output_dir, prefix):
     print(f"         └-> Exclus (déjà trouvés Email/KPEP) : {excluded_count_nom}")
     print("      ------------------------------------------------")
 
-    # 6. Écriture des Fichiers SQL
-    # Pour Last Name et Middle Name, on utilise la MEME liste de couples (Nom, Date)
-    # car le script SQL appliquera cette liste soit sur usr.last_name soit sur middleName.
+    # 6. Écriture
     tasks = [
         ("00-Export_CIAM_EMAIL_With_Distinct.sql", "00-Export_CIAM_EMAIL_Global", email_list, "simple_email"),
         ("00-Export_CIAM_KPEP_With_Distinct.sql", "00-Export_CIAM_KPEP_Global", kpep_list, "simple"),
@@ -297,32 +287,27 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f: base_sql = f.read()
             
-            # --- OPTIMISATION INSENSIBLE A LA CASSE (EMAIL) ---
             if "simple_email" == data_type:
-                # On force LOWER sur la colonne BDD pour matcher la liste Python qui est en lower
                 base_sql = base_sql.replace("usr.email IN", "LOWER(usr.email) IN")
                 base_sql = base_sql.replace("usr.email =", "LOWER(usr.email) =")
             
             values_str = ""
             if "simple" in data_type:
-                # Cas standard : IN ('val1', 'val2')
                 sanitized_list = [x.replace("'", "''") for x in data_list]
                 values_str = "'" + "','".join(sanitized_list) + "'"
             
             elif "complex" in data_type:
-                # Cas Recherche élargie : OR (name ILIKE '...' AND date = '...')
-                # ILIKE garantit l'insensibilité à la casse côté BDD PostgreSQL
                 target_col = "usr.last_name" if data_type == "complex_lastname" else "attmiddle.value"
                 conditions = []
                 for nom, dt in data_list:
-                    # Note : On n'utilise PAS le prénom ici, conformément à la demande "Sans Prénom"
+                    # Ici dt est déjà garanti au format YYYY-MM-DD
                     cond = f"({target_col} ILIKE '{nom}' AND att2.value = '{dt}')"
                     conditions.append(cond)
                 values_str = "\n      OR ".join(conditions)
             
             if "__LISTE_IDS__" in base_sql:
                 final_sql = base_sql.replace("__LISTE_IDS__", values_str)
-                final_sql = final_sql.replace("2025-11-30", today_str) # Mise à jour date fin
+                final_sql = final_sql.replace("2025-11-30", today_str) 
                 
                 header = f"/* GENERATED {datetime.now()} | SOURCE: {prefix} | NB: {len(data_list)} */\n"
                 out_name = f"{prefix}_REQ_{output_suffix}.sql"
