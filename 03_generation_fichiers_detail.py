@@ -19,6 +19,7 @@ DESCRIPTION : Consolidation des retours CIAM et application de la cascade de rè
 - Ajout de la colonne 'Email_Other' récupérée depuis les référentiels (CK, CM...).
 - ENRICHISSEMENT MAXIMAL : Ajout Nom, Prenom, Date, Origine, ID Technique, Telephone, Type Event.
 - Gestion des types (Object) pour éviter les warnings.
+- [FIX] Gestion robuste des fichiers vides pour éviter les KeyError sur key_nom_date.
 ================================================================================
 """
 
@@ -53,6 +54,10 @@ def load_csv(path):
         current_params.update(params)
         try:
             df = pd.read_csv(path, **current_params)
+            # Petit nettoyage preventif si le fichier est vide ou presque
+            if df.empty:
+                return df
+            
             cols = [c.lower() for c in df.columns]
             keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm', 'date', 'id', 'refper', 'last_name', 'nom', 'middlename']
             if any(k in c for c in cols for k in keywords):
@@ -61,7 +66,7 @@ def load_csv(path):
     return None
 
 def normalize_cols(df):
-    if df is not None:
+    if df is not None and not df.empty:
         df.columns = [c.lower().strip() for c in df.columns]
         df = df.loc[:, ~df.columns.duplicated()]
         for col in df.columns:
@@ -69,7 +74,7 @@ def normalize_cols(df):
     return df
 
 def get_col_name(df, candidates):
-    if df is None: return None
+    if df is None or df.empty: return None
     for col in candidates:
         if col in df.columns: return col
     return None
@@ -114,13 +119,14 @@ def main():
     print("   📥 Chargement des données...")
     df_ns = normalize_cols(load_csv(ns_path))
     
+    # Chargement avec tolerance aux fichiers manquants (renvoie None ou Empty DF)
     df_iehe = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_IEHE.csv"))
     df_cm = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_CM.csv"))
     df_ck = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_CK.csv"))
     df_nom = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_Rech_Nom.csv"))
     df_middle = normalize_cols(load_csv(INPUT_DIR / f"{prefix}_Rech_Middle.csv"))
 
-    if df_ns is None: 
+    if df_ns is None or df_ns.empty: 
         print("   ❌ Fichier New_S invalide ou vide.")
         return
 
@@ -233,29 +239,50 @@ def main():
     ref_middle = prep_ref(df_middle, 'Rech_Middle')
 
     # Création des index de matching
-    idx_email = ref_cm.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if not ref_cm.empty else pd.DataFrame()
-    idx_kpep = ref_ck.dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if not ref_ck.empty else pd.DataFrame()
+    # [CORRECTION] Ajout des verifications .empty et colonnes avant set_index pour eviter le KeyError
+    
+    idx_email = pd.DataFrame()
+    if not ref_cm.empty and 'key_email' in ref_cm.columns:
+        idx_email = ref_cm.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email')
+        
+    idx_kpep = pd.DataFrame()
+    if not ref_ck.empty and 'key_kpep' in ref_ck.columns:
+        idx_kpep = ref_ck.dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep')
     
     all_refs = pd.concat([ref_cm, ref_ck, ref_nom, ref_middle], ignore_index=True)
-    idx_identite_full = all_refs.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full')
-    idx_identite_simple = all_refs.dropna(subset=['key_identite_simple']).drop_duplicates('key_identite_simple').set_index('key_identite_simple')
+    
+    idx_identite_full = pd.DataFrame()
+    if not all_refs.empty and 'key_identite_full' in all_refs.columns:
+        idx_identite_full = all_refs.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full')
 
-    idx_rech_nom = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date')
-    idx_rech_middle = ref_middle.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date')
+    idx_identite_simple = pd.DataFrame()
+    if not all_refs.empty and 'key_identite_simple' in all_refs.columns:
+        idx_identite_simple = all_refs.dropna(subset=['key_identite_simple']).drop_duplicates('key_identite_simple').set_index('key_identite_simple')
+
+    # [CORRECTION] C'est ici que votre erreur se produisait
+    idx_rech_nom = pd.DataFrame()
+    if not ref_nom.empty and 'key_nom_date' in ref_nom.columns:
+        idx_rech_nom = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date')
+
+    idx_rech_middle = pd.DataFrame()
+    if not ref_middle.empty and 'key_nom_date' in ref_middle.columns:
+        idx_rech_middle = ref_middle.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date')
 
     # --- 3. EXECUTION DES MATCHINGS ---
     print("   🔍 Exécution des rapprochements...")
 
-    # A. Récupération Colonnes de Contrôle
-    m_cm = df_work.merge(idx_email[['email']], left_on='key_val', right_index=True, how='left').rename(columns={'email': 'Email_CM'})
-    m_ck = df_work.merge(idx_kpep[['email']], left_on='key_kpep', right_index=True, how='left').rename(columns={'email': 'Email_CK'})
-    m_rn = df_work.merge(idx_rech_nom[['email']], left_on='key_nom_date', right_index=True, how='left').rename(columns={'email': 'Email_Rech_LastName'})
-    m_rm = df_work.merge(idx_rech_middle[['email']], left_on='key_nom_date', right_index=True, how='left').rename(columns={'email': 'Email_Rech_Middle'})
+    # A. Récupération Colonnes de Contrôle (Email)
+    # [CORRECTION] Gestion des merge vides si index vide
+    def safe_merge_email(df_w, idx_df, col_key, col_ren):
+        if idx_df.empty: return pd.Series([np.nan]*len(df_w), index=df_w.index)
+        temp = df_w.merge(idx_df[['email']], left_on=col_key, right_index=True, how='left')
+        return temp['email']
 
-    df_work['Email_CM'] = m_cm['Email_CM']
-    df_work['Email_CK'] = m_ck['Email_CK']
-    df_work['Email_Rech_LastName'] = m_rn['Email_Rech_LastName']
-    df_work['Email_Rech_Middle'] = m_rm['Email_Rech_Middle']
+    df_work['Email_CM'] = safe_merge_email(df_work, idx_email, 'key_val', 'Email_CM')
+    df_work['Email_CK'] = safe_merge_email(df_work, idx_kpep, 'key_kpep', 'Email_CK')
+    df_work['Email_Rech_LastName'] = safe_merge_email(df_work, idx_rech_nom, 'key_nom_date', 'Email_Rech_LastName')
+    df_work['Email_Rech_Middle'] = safe_merge_email(df_work, idx_rech_middle, 'key_nom_date', 'Email_Rech_Middle')
+    
     df_work['Email_Rech_SansPrenom'] = df_work['Email_Rech_LastName'].combine_first(df_work['Email_Rech_Middle'])
 
     # B. Waterfall de Décision (Priorités)
@@ -309,31 +336,36 @@ def main():
                 if c_type: df_work.loc[mask, 'CIAM_Type_Event'] = match_df.loc[mask, c_type]
 
     # 1. Matching Identité Simple (Faible)
-    m = df_work.merge(idx_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_m'))
-    apply_match(m, 'Nom+Prenom', 'CIAM_TROUVE_IDENTITE_FAIBLE')
+    if not idx_identite_simple.empty:
+        m = df_work.merge(idx_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_m'))
+        apply_match(m, 'Nom+Prenom', 'CIAM_TROUVE_IDENTITE_FAIBLE')
 
     # 2. Matching Identité Complète (Moyenne)
-    m = df_work.merge(idx_identite_full, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
-    apply_match(m, 'Nom+Prenom+Date', 'CIAM_TROUVE_IDENTITE')
+    if not idx_identite_full.empty:
+        m = df_work.merge(idx_identite_full, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
+        apply_match(m, 'Nom+Prenom+Date', 'CIAM_TROUVE_IDENTITE')
     
     # 3. KPEP (Forte)
-    m = df_work.merge(idx_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_m'))
-    apply_match(m, 'KPEP', 'CIAM_TROUVE_KPEP')
+    if not idx_kpep.empty:
+        m = df_work.merge(idx_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_m'))
+        apply_match(m, 'KPEP', 'CIAM_TROUVE_KPEP')
 
     # 4. Email Val Coord (Très Forte)
-    m = df_work.merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
-    apply_match(m, 'Val_Coord', 'CIAM_TROUVE_EMAIL')
+    if not idx_email.empty:
+        m = df_work.merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
+        apply_match(m, 'Val_Coord', 'CIAM_TROUVE_EMAIL')
 
     # 5. Mail CIAM (Maximale)
-    m = df_work.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
-    apply_match(m, 'Mail_CIAM', 'CIAM_TROUVE_EMAIL')
+    if not idx_email.empty:
+        m = df_work.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
+        apply_match(m, 'Mail_CIAM', 'CIAM_TROUVE_EMAIL')
 
     # --- ETAPE SPECIALE : RECHERCHE ELARGIE (Sur le reliquat) ---
     
     mask_reliquat = (df_work['Indicateur_Rapprochement'] == 'CIAM_NON_TROUVE')
     
     # 6. Recherche Last Name sans Prénom
-    if mask_reliquat.any():
+    if mask_reliquat.any() and not idx_rech_nom.empty:
         m_ln = df_work[mask_reliquat].merge(idx_rech_nom, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
         col_realm = get_merge_col(m_ln, 'realm_id', '_m')
         
@@ -363,7 +395,7 @@ def main():
     mask_reliquat = (df_work['Indicateur_Rapprochement'] == 'CIAM_NON_TROUVE')
 
     # 7. Recherche Middle Name sans Prénom
-    if mask_reliquat.any():
+    if mask_reliquat.any() and not idx_rech_middle.empty:
         m_mn = df_work[mask_reliquat].merge(idx_rech_middle, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
         col_realm = get_merge_col(m_mn, 'realm_id', '_m')
         
@@ -406,7 +438,7 @@ def main():
 
     # NS_IEHE
     col_id_ns = get_col_name(df_ns_full, ['num_personne', 'numpersonne'])
-    if df_iehe is not None and col_id_ns and 'refperboccn' in df_iehe.columns:
+    if df_iehe is not None and not df_iehe.empty and col_id_ns and 'refperboccn' in df_iehe.columns:
         df_iehe_ref = df_iehe.drop_duplicates(subset=['refperboccn']).set_index('refperboccn')
         df_merged = df_ns_full.merge(df_iehe_ref, left_on=col_id_ns, right_index=True, how='left', suffixes=('', '_iehe'))
         df_merged['IEHE_Present'] = df_merged.get('idrpp', pd.Series()).notna().map({True: 'OUI', False: 'NON'})
