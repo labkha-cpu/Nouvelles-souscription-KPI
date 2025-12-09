@@ -105,6 +105,14 @@ def get_col_name(df, candidates):
         if col in df.columns: return col
     return None
 
+def get_merge_col(df, base_col, suffix='_m'):
+    """Retourne le nom de colonne correct après un merge (avec ou sans suffixe)."""
+    if f"{base_col}{suffix}" in df.columns:
+        return f"{base_col}{suffix}"
+    elif base_col in df.columns:
+        return base_col
+    return None
+
 # --- FONCTIONS QUALITÉ ---
 
 def check_email_quality(df, col_name, label):
@@ -309,10 +317,13 @@ def main():
     df_c['norm_prenom'] = df_c[col_prenom].apply(clean_text) if col_prenom else ""
     
     if col_dnaiss:
-        # Clé Nom + Date (Sans Prénom) pour recherche élargie
-        df_c['dt_fmt'] = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+        # FIX: Gestion du format date pour éviter UserWarning
+        # On tente de parser en forçant dayfirst, et on ignore le warning si le format est ambigu
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df_c['dt_fmt'] = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+            
         df_c['key_nom_date'] = (df_c['norm_nom'] + "|" + df_c['dt_fmt']).replace(r'^\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
-        # Clé Identité Complète
         df_c['key_identite_full'] = (df_c['norm_nom'] + "|" + df_c['norm_prenom'] + "|" + df_c['dt_fmt']).replace(r'\|\|', np.nan, regex=True)
     else:
         df_c['key_nom_date'] = np.nan
@@ -344,7 +355,9 @@ def main():
         temp['norm_prenom'] = df_in[c_r_pnom].apply(clean_text) if c_r_pnom else ""
         
         if c_r_date:
-            dt_r = pd.to_datetime(df_in[c_r_date], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                dt_r = pd.to_datetime(df_in[c_r_date], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
             temp['key_nom_date'] = (temp['norm_nom'] + "|" + dt_r)
             temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + dt_r)
         
@@ -377,54 +390,67 @@ def main():
     # Etape 1: Mail CIAM (Priorité Absolue)
     if not idx_email.empty and 'realm_id' in idx_email.columns:
         m = df_c.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        df_c.loc[mask, 'Found'] = True
-        df_c.loc[mask, 'Methode'] = 'Mail_CIAM'
+        # FIX: Check dynamique du nom de colonne après merge (car _m n'est pas garanti si pas de collision)
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            df_c.loc[mask, 'Found'] = True
+            df_c.loc[mask, 'Methode'] = 'Mail_CIAM'
 
     # Etape 2: Val Coord (Sur non trouvé)
     if not idx_email.empty and 'realm_id' in idx_email.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        found_idx = df_c[mask_remain][mask].index
-        df_c.loc[found_idx, 'Found'] = True
-        df_c.loc[found_idx, 'Methode'] = 'Val_Coord'
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            found_idx = df_c[mask_remain][mask].index
+            df_c.loc[found_idx, 'Found'] = True
+            df_c.loc[found_idx, 'Methode'] = 'Val_Coord'
 
     # Etape 3: KPEP
     if not idx_kpep.empty and 'realm_id' in idx_kpep.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        found_idx = df_c[mask_remain][mask].index
-        df_c.loc[found_idx, 'Found'] = True
-        df_c.loc[found_idx, 'Methode'] = 'KPEP'
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            found_idx = df_c[mask_remain][mask].index
+            df_c.loc[found_idx, 'Found'] = True
+            df_c.loc[found_idx, 'Methode'] = 'KPEP'
 
     # Etape 4: Identité Complète (Nom+Prenom+Date)
     if not idx_identite.empty and 'realm_id' in idx_identite.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_identite, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        found_idx = df_c[mask_remain][mask].index
-        df_c.loc[found_idx, 'Found'] = True
-        df_c.loc[found_idx, 'Methode'] = 'Identite_Full'
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            found_idx = df_c[mask_remain][mask].index
+            df_c.loc[found_idx, 'Found'] = True
+            df_c.loc[found_idx, 'Methode'] = 'Identite_Full'
 
     # Etape 5: Recherche Élargie (Last Name sans Prénom) - NOUVEAU
     if not idx_nom.empty and 'realm_id' in idx_nom.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_nom, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        found_idx = df_c[mask_remain][mask].index
-        df_c.loc[found_idx, 'Found'] = True
-        df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Nom'
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            found_idx = df_c[mask_remain][mask].index
+            df_c.loc[found_idx, 'Found'] = True
+            df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Nom'
 
     # Etape 6: Recherche Élargie (Middle Name sans Prénom) - NOUVEAU
     if not idx_middle.empty and 'realm_id' in idx_middle.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_middle, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
-        mask = m['realm_id_m'].notna()
-        found_idx = df_c[mask_remain][mask].index
-        df_c.loc[found_idx, 'Found'] = True
-        df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Middle'
+        col_res = get_merge_col(m, 'realm_id', '_m')
+        if col_res:
+            mask = m[col_res].notna()
+            found_idx = df_c[mask_remain][mask].index
+            df_c.loc[found_idx, 'Found'] = True
+            df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Middle'
 
     # KPIs Matching
     count_rapproche = df_c['Found'].sum()
