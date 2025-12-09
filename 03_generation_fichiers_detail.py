@@ -13,10 +13,9 @@ SCRIPT : 03_generation_fichiers_detail.py
 DESCRIPTION : Consolidation des retours CIAM et application de la cascade de règles.
               Integre la recherche elargie (Last Name seul / Middle Name seul).
 
---- NOUSVEAUTES ---
-- Normalisation systématique des emails (LOWER)
-- Ajout des étapes de matching "Sans Prénom"
-- Ajout des colonnes de tracabilité (Email_CM, Email_CK, Email_Rech...)
+--- CORRECTIFS ---
+- Gestion explicite des types (Object) pour éviter les FutureWarning lors de l'insertion de textes.
+- Suppression des avertissements sur le parsing des dates.
 ================================================================================
 """
 
@@ -138,10 +137,14 @@ def main():
     
     # Clé Nom+Date (Pour Recherche Élargie)
     if col_dnaiss:
-        # On ne garde que les 10 premiers chars pour YYYY-MM-DD
-        df_work['dt_fmt'] = pd.to_datetime(df_work[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+        # FIX: Gestion Warning Date (On force dayfirst mais on ignore les erreurs si format inconnu)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df_work['dt_fmt'] = pd.to_datetime(df_work[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+        
         df_work['key_nom_date'] = (df_work['norm_nom'] + "|" + df_work['dt_fmt']).replace(r'^\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
     else:
+        df_work['dt_fmt'] = ""
         df_work['key_nom_date'] = np.nan
 
     # Clé Identité Complète (Nom+Prenom+Date)
@@ -170,7 +173,9 @@ def main():
         temp['key_kpep'] = temp['idkpep'].replace('', np.nan)
         
         if c_dn:
-             dt_str = pd.to_datetime(df_source[c_dn], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+             with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                dt_str = pd.to_datetime(df_source[c_dn], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
              temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + dt_str)
              temp['key_nom_date'] = (temp['norm_nom'] + "|" + dt_str) # Clé sans Prénom
         else:
@@ -231,48 +236,57 @@ def main():
     # Initialisation
     df_work['Indicateur_Rapprochement'] = 'CIAM_NON_TROUVE'
     df_work['Methode_Retenue'] = 'AUCUNE'
+    
+    # FIX: Initialisation en Object pour éviter FutureWarnings (float vs string)
     df_work['CIAM_Email_Cible'] = np.nan
+    df_work['CIAM_Email_Cible'] = df_work['CIAM_Email_Cible'].astype(object)
     df_work['CIAM_Societe'] = np.nan
+    df_work['CIAM_Societe'] = df_work['CIAM_Societe'].astype(object)
 
     # 1. Matching Identité Simple (Priorité Basse - Écrasé par la suite si mieux)
     match = df_work.merge(idx_identite_simple, left_on='key_identite_simple', right_index=True, how='left', suffixes=('', '_m'))
     mask = match['realm_id'].notna()
-    df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE_FAIBLE'
-    df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom'
-    df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
-    df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
+    if mask.any():
+        df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE_FAIBLE'
+        df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom'
+        df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
+        df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
 
     # 2. Matching Identité Complète (Moyenne)
     match = df_work.merge(idx_identite_full, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
     mask = match['realm_id'].notna()
-    df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE'
-    df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom+Date'
-    df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
-    df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
+    if mask.any():
+        df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_IDENTITE'
+        df_work.loc[mask, 'Methode_Retenue'] = 'Nom+Prenom+Date'
+        df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
+        df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
     
     # 3. KPEP (Forte)
     match = df_work.merge(idx_kpep, left_on='key_kpep', right_index=True, how='left', suffixes=('', '_m'))
     mask = match['realm_id'].notna()
-    df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_KPEP'
-    df_work.loc[mask, 'Methode_Retenue'] = 'KPEP'
-    df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
-    df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
+    if mask.any():
+        df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_KPEP'
+        df_work.loc[mask, 'Methode_Retenue'] = 'KPEP'
+        df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
+        df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
 
     # 4. Email Val Coord (Très Forte)
     match = df_work.merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
     mask = match['realm_id'].notna()
-    df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
-    df_work.loc[mask, 'Methode_Retenue'] = 'Val_Coord'
-    df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
-    df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
+    if mask.any():
+        df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
+        df_work.loc[mask, 'Methode_Retenue'] = 'Val_Coord'
+        df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
+        df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
 
     # 5. Mail CIAM (Maximale)
     match = df_work.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
     mask = match['realm_id'].notna()
-    df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
-    df_work.loc[mask, 'Methode_Retenue'] = 'Mail_CIAM'
-    df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
-    df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
+    if mask.any():
+        df_work.loc[mask, 'Indicateur_Rapprochement'] = 'CIAM_TROUVE_EMAIL'
+        df_work.loc[mask, 'Methode_Retenue'] = 'Mail_CIAM'
+        df_work.loc[mask, 'CIAM_Email_Cible'] = match.loc[mask, 'email']
+        df_work.loc[mask, 'CIAM_Societe'] = match.loc[mask, 'realm_id']
 
     # --- ETAPE SPECIALE : RECHERCHE ELARGIE (Sur le reliquat uniquement) ---
     # On applique ces règles SEULEMENT si non rapproché par les étapes standards (1-5)
@@ -281,28 +295,32 @@ def main():
     
     # 6. Recherche Last Name sans Prénom
     # Merge sur key_nom_date (Nom + Date) avec ref_nom
-    match_ln = df_work[mask_reliquat].merge(idx_rech_nom, left_on='key_nom_date', right_index=True, how='left')
-    mask_found_ln = match_ln['realm_id'].notna()
-    
-    # Application sur le DataFrame principal via l'index
-    idx_to_update = df_work[mask_reliquat][mask_found_ln].index
-    df_work.loc[idx_to_update, 'Indicateur_Rapprochement'] = 'Rapproché_LastName_SansPrenom'
-    df_work.loc[idx_to_update, 'Methode_Retenue'] = 'LastName_SansPrenom'
-    df_work.loc[idx_to_update, 'CIAM_Email_Cible'] = match_ln.loc[mask_found_ln, 'email']
-    df_work.loc[idx_to_update, 'CIAM_Societe'] = match_ln.loc[mask_found_ln, 'realm_id']
+    if mask_reliquat.any():
+        match_ln = df_work[mask_reliquat].merge(idx_rech_nom, left_on='key_nom_date', right_index=True, how='left')
+        mask_found_ln = match_ln['realm_id'].notna()
+        
+        if mask_found_ln.any():
+            # Application sur le DataFrame principal via l'index
+            idx_to_update = df_work[mask_reliquat][mask_found_ln].index
+            df_work.loc[idx_to_update, 'Indicateur_Rapprochement'] = 'Rapproché_LastName_SansPrenom'
+            df_work.loc[idx_to_update, 'Methode_Retenue'] = 'LastName_SansPrenom'
+            df_work.loc[idx_to_update, 'CIAM_Email_Cible'] = match_ln.loc[mask_found_ln, 'email']
+            df_work.loc[idx_to_update, 'CIAM_Societe'] = match_ln.loc[mask_found_ln, 'realm_id']
 
     # Mise à jour du masque reliquat (ceux qui restent encore non trouvés)
     mask_reliquat = (df_work['Indicateur_Rapprochement'] == 'CIAM_NON_TROUVE')
 
     # 7. Recherche Middle Name sans Prénom
-    match_mn = df_work[mask_reliquat].merge(idx_rech_middle, left_on='key_nom_date', right_index=True, how='left')
-    mask_found_mn = match_mn['realm_id'].notna()
-    
-    idx_to_update_mn = df_work[mask_reliquat][mask_found_mn].index
-    df_work.loc[idx_to_update_mn, 'Indicateur_Rapprochement'] = 'Rapproché_MiddleName_SansPrenom'
-    df_work.loc[idx_to_update_mn, 'Methode_Retenue'] = 'MiddleName_SansPrenom'
-    df_work.loc[idx_to_update_mn, 'CIAM_Email_Cible'] = match_mn.loc[mask_found_mn, 'email']
-    df_work.loc[idx_to_update_mn, 'CIAM_Societe'] = match_mn.loc[mask_found_mn, 'realm_id']
+    if mask_reliquat.any():
+        match_mn = df_work[mask_reliquat].merge(idx_rech_middle, left_on='key_nom_date', right_index=True, how='left')
+        mask_found_mn = match_mn['realm_id'].notna()
+        
+        if mask_found_mn.any():
+            idx_to_update_mn = df_work[mask_reliquat][mask_found_mn].index
+            df_work.loc[idx_to_update_mn, 'Indicateur_Rapprochement'] = 'Rapproché_MiddleName_SansPrenom'
+            df_work.loc[idx_to_update_mn, 'Methode_Retenue'] = 'MiddleName_SansPrenom'
+            df_work.loc[idx_to_update_mn, 'CIAM_Email_Cible'] = match_mn.loc[mask_found_mn, 'email']
+            df_work.loc[idx_to_update_mn, 'CIAM_Societe'] = match_mn.loc[mask_found_mn, 'realm_id']
 
     # --- FINALISATION ---
     print("   📝 Finalisation du fichier NS_CIAM...")
