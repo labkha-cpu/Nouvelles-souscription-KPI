@@ -464,6 +464,29 @@ def main():
     # Match IEHE (hors population ciblée car IEHE global)
     match_iehe = df_ns['num_personne'].isin(set(df_iehe['refperboccn'])).sum() if df_iehe is not None and 'num_personne' in df_ns.columns and 'refperboccn' in df_iehe.columns else 0
 
+    # -----------------------------------------------------------------------
+    # NOUVEAU BLOC : QUALITE DONNEES CIAM
+    # -----------------------------------------------------------------------
+    nb_identique = 0
+    nb_vide_ciam = 0
+    
+    # On travaille sur la population éligible (df_c)
+    if col_mail_ciam:
+        # Nettoyage
+        s_ciam = df_c[col_mail_ciam].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
+        nb_vide_ciam = int((s_ciam == '').sum())
+        
+        if col_val_coord:
+            s_val = df_c[col_val_coord].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
+            # On considère identique si CIAM n'est pas vide ET strictement égal à ValCoord
+            mask_ident = (s_ciam != '') & (s_ciam == s_val)
+            nb_identique = int(mask_ident.sum())
+            
+    qualite_ciam_data = {
+        "Email_Identique_ValCoord": fmt_kpi(nb_identique, vol_c),
+        "Email_CIAM_Vide_ou_Null": fmt_kpi(nb_vide_ciam, vol_c)
+    }
+
     matching_data = {
         "Indicateurs_Clefs": {
             "Population_Analysee_Eligible": vol_c,
@@ -472,7 +495,8 @@ def main():
             "Total_Non_Rapproches_CIAM": fmt_kpi(count_non_rapproche, vol_c),
             "Detail_Rapprochement_Methode": detail_methodes,
             "NS_vers_IEHE_Global": fmt_kpi(match_iehe, vol)
-        }
+        },
+        "Qualite_Donnees_CIAM": qualite_ciam_data
     }
 
     # === 5. QUALITÉ CONTACT (KPI INITIAUX CONSERVÉS) ===
