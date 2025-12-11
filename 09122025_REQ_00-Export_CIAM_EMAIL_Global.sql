@@ -1,4 +1,4 @@
-/* GENERATED 2025-12-11 10:03:03.517377 | SOURCE: 09122025 | NB: 24586 */
+/* GENERATED 2025-12-11 10:37:11.707372 | SOURCE: 09122025 | NB: 24586 */
 /* OPTIMIZED QUERY 
    Logic: Filter Users -> Find Latest Event -> Join Attributes ONCE
 */

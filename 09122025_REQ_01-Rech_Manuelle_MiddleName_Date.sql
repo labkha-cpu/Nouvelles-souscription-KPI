@@ -1,6 +1,6 @@
-/* GENERATED 2025-12-11 10:03:03.532875 | SOURCE: 09122025 | NB: 268 */
+/* GENERATED 2025-12-11 10:37:11.725769 | SOURCE: 09122025 | NB: 268 */
 /* REQUETE RECHERCHE MIDDLE NAME / DATE NAISSANCE */
-SELECT DISTINCT ON (first_name, middleName, birthDate)
+SELECT DISTINCT t_ciam.MIDDLE_NAME, ON (first_name, middleName, birthDate)
   id,
   realm_id,
   idkpep,
