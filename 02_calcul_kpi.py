@@ -19,7 +19,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def clean_text(text):
     """Nettoie un texte (Majuscules, sans accents, sans tirets, lettres uniquement)."""
-    if pd.isna(text) or text == '': return ""
+    if pd.isna(text) or text == '' or str(text).lower() == 'nan': return ""
     text = str(text).upper()
     text = ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
     text = re.sub(r'[^A-Z]', '', text)
@@ -45,7 +45,7 @@ def load_csv(path):
     """Charge un CSV de manière robuste."""
     if not path or not path.exists(): return None
     
-    # On laisse le moteur python sniffer le separateur, mais on force le type str pour éviter les conversions auto
+    # On force le type string pour éviter les conversions de dates/nombres implicites
     read_params = {'sep': None, 'engine': 'python', 'dtype': str}
     attempts = [
         {'encoding': 'utf-8', 'skiprows': 0},
@@ -74,7 +74,7 @@ def normalize_cols(df):
         df = df[cols_to_keep]
         df = df.loc[:, ~df.columns.duplicated()]
         for col in df.columns:
-            # Nettoyage des valeurs : on retire les quotes qui pourraient traîner et on strip
+            # Nettoyage profond des valeurs (quotes, espaces)
             df[col] = df[col].astype(str).str.strip().str.replace('"', '', regex=False).replace({'nan': '', 'None': ''})
     return df
 
@@ -82,11 +82,11 @@ def parse_date_strict(series):
     """Parse les dates en format YYYY-MM-DD de manière stricte (ISO)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        # On tente d'abord le format ISO direct (YYYY-MM-DD) qui est le plus probable dans ces fichiers
+        # Format ISO strict pour éviter les ambiguïtés dayfirst
         return pd.to_datetime(series, format='%Y-%m-%d', errors='coerce')
 
 def parse_date_flexible(series):
-    """Parse les dates avec dayfirst=True pour les formats français (DD/MM/YYYY)."""
+    """Parse les dates avec dayfirst=True pour les formats français (DD/MM/YYYY) ou mixtes."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return pd.to_datetime(series, dayfirst=True, errors='coerce')
@@ -162,7 +162,7 @@ def main():
     ns_path, prefix = find_latest_new_s(INPUT_DIR)
     if not ns_path: return
 
-    print(f"🚀 Analyse KPI (Strict Matching Nom/Date & Fix Date Parsing) pour le flux : {prefix}")
+    print(f"🚀 Analyse KPI (Strict Matching & ISO Dates) pour le flux : {prefix}")
     
     # Chemins
     iehe_path = INPUT_DIR / f"{prefix}_IEHE.csv"
@@ -327,7 +327,7 @@ def main():
     if col_dnaiss:
         # On essaie d'abord en strict YYYY-MM-DD car c'est le format observé dans New_S et Rech_...
         df_c['dt_fmt'] = parse_date_strict(df_c[col_dnaiss]).dt.strftime('%Y-%m-%d')
-        # Si echec, fallback flexible
+        # Si echec (ex: 20/02/1985), fallback flexible
         mask_na = df_c['dt_fmt'].isna()
         if mask_na.any():
              df_c.loc[mask_na, 'dt_fmt'] = parse_date_flexible(df_c.loc[mask_na, col_dnaiss]).dt.strftime('%Y-%m-%d')
@@ -343,6 +343,7 @@ def main():
         """Prépare un référentiel en ciblant EXPLICITEMENT les colonnes nom et date pour la clé."""
         if df_in is None or df_in.empty: return pd.DataFrame()
         
+        # Vérif existence colonnes cibles
         if target_col_nom not in df_in.columns or target_col_date not in df_in.columns:
             return pd.DataFrame()
 
@@ -355,7 +356,7 @@ def main():
         
         # Date Strict ISO
         temp['dt_fmt'] = parse_date_strict(df_in[target_col_date]).dt.strftime('%Y-%m-%d')
-        # Fallback
+        # Fallback si format différent
         mask_na = temp['dt_fmt'].isna()
         if mask_na.any():
              temp.loc[mask_na, 'dt_fmt'] = parse_date_flexible(df_in.loc[mask_na, target_col_date]).dt.strftime('%Y-%m-%d')
