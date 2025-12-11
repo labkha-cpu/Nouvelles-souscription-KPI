@@ -45,6 +45,7 @@ def load_csv(path):
     """Charge un CSV de manière robuste."""
     if not path or not path.exists(): return None
     
+    # On laisse le moteur python sniffer le separateur, mais on force le type str pour éviter les conversions auto
     read_params = {'sep': None, 'engine': 'python', 'dtype': str}
     attempts = [
         {'encoding': 'utf-8', 'skiprows': 0},
@@ -59,7 +60,7 @@ def load_csv(path):
         try:
             df = pd.read_csv(path, **current_params)
             cols = [c.lower() for c in df.columns]
-            keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm', 'id', 'date', 'nom', 'last_name']
+            keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm', 'id', 'date', 'nom', 'last_name', 'middlename']
             if any(k in c for c in cols for k in keywords):
                 return df
         except: continue
@@ -73,18 +74,26 @@ def normalize_cols(df):
         df = df[cols_to_keep]
         df = df.loc[:, ~df.columns.duplicated()]
         for col in df.columns:
+            # Nettoyage des valeurs : on retire les quotes qui pourraient traîner et on strip
             df[col] = df[col].astype(str).str.strip().str.replace('"', '', regex=False).replace({'nan': '', 'None': ''})
     return df
 
-def parse_date(ds):
+def parse_date_strict(series):
+    """Parse les dates en format YYYY-MM-DD de manière stricte (ISO)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return pd.to_datetime(ds, dayfirst=True, errors='coerce')
+        # On tente d'abord le format ISO direct (YYYY-MM-DD) qui est le plus probable dans ces fichiers
+        return pd.to_datetime(series, format='%Y-%m-%d', errors='coerce')
+
+def parse_date_flexible(series):
+    """Parse les dates avec dayfirst=True pour les formats français (DD/MM/YYYY)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pd.to_datetime(series, dayfirst=True, errors='coerce')
 
 def find_latest_new_s(directory):
     if not directory.exists(): return None, None
     candidates = []
-    # On cherche le fichier source New_S
     excluded_suffixes = ["_IEHE", "_CM", "_CK", "_REQ", "Resultats", "KPI", "_Rech_", "NS_CIAM", "NS_IEHE"]
     for f in directory.glob("*.csv"):
         if any(kw in f.name for kw in excluded_suffixes): continue
@@ -106,7 +115,6 @@ def get_col_name(df, candidates):
     return None
 
 def get_merge_col(df, base_col, suffix='_m'):
-    """Retourne le nom de colonne correct après un merge (avec ou sans suffixe)."""
     if f"{base_col}{suffix}" in df.columns:
         return f"{base_col}{suffix}"
     elif base_col in df.columns:
@@ -118,7 +126,6 @@ def get_merge_col(df, base_col, suffix='_m'):
 def check_email_quality(df, col_name, label):
     if df is None or col_name is None or col_name not in df.columns: 
         return {label: "Non disponible"}
-    # Normalisation Lowercase explicite
     series = df[col_name].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
     total = len(series)
     vides = (series == '').sum()
@@ -155,7 +162,7 @@ def main():
     ns_path, prefix = find_latest_new_s(INPUT_DIR)
     if not ns_path: return
 
-    print(f"🚀 Analyse KPI (Complet + Matching Élargi) pour le flux : {prefix}")
+    print(f"🚀 Analyse KPI (Strict Matching Nom/Date & Fix Date Parsing) pour le flux : {prefix}")
     
     # Chemins
     iehe_path = INPUT_DIR / f"{prefix}_IEHE.csv"
@@ -183,7 +190,7 @@ def main():
         "Rech_Middle": str(middle_path.name) if middle_path.exists() else "⚠️ ABSENT"
     }
     
-    # === 1. ACTIVITÉ (KPI INITIAUX CONSERVÉS) ===
+    # === 1. ACTIVITÉ ===
     vol = len(df_ns)
     pres = [c for c in ['code_soc_appart', 'date_effet_adhesion', 'type_assure'] if c in df_ns.columns]
     det_act = df_ns.groupby(pres).size().reset_index(name='count').to_dict('records') if pres else []
@@ -199,8 +206,9 @@ def main():
 
     age_stats = {}
     if 'date_naissance' in df_ns.columns and 'date_adhesion' in df_ns.columns:
-        dt_naiss = parse_date(df_ns['date_naissance'])
-        dt_adh = parse_date(df_ns['date_adhesion'])
+        # Date naissance NS souvent ISO ou Flexible
+        dt_naiss = parse_date_flexible(df_ns['date_naissance'])
+        dt_adh = parse_date_flexible(df_ns['date_adhesion'])
         age_series = (dt_adh - dt_naiss).dt.days / 365.25
         age_stats = calculate_stats(age_series.dropna())
 
@@ -212,19 +220,19 @@ def main():
         "Details": det_act
     }
 
-    # === 2. OPS & TP (KPI INITIAUX CONSERVÉS) ===
+    # === 2. OPS & TP ===
     op_stats = {}
     if 'date_adhesion' in df_ns.columns:
         try: dt_file = datetime.strptime(prefix, "%d%m%Y")
         except: dt_file = datetime.now()
-        dt_adh = parse_date(df_ns['date_adhesion'])
+        dt_adh = parse_date_flexible(df_ns['date_adhesion'])
         op_stats = calculate_stats((dt_file - dt_adh).dt.days.dropna())
 
     tp_met = {'tp_ok_total': fmt_kpi(0,0)}
     ged_met = {'Taux_Presence_GED': 0}
 
     if 'date_adhesion' in df_ns.columns and 'date_effet_adhesion' in df_ns.columns:
-        d = (parse_date(df_ns['date_effet_adhesion']) - parse_date(df_ns['date_adhesion'])).dt.days
+        d = (parse_date_flexible(df_ns['date_effet_adhesion']) - parse_date_flexible(df_ns['date_adhesion'])).dt.days
         neg = int((d < 0).sum())
         ok_pos = int(((d >= 0) & (d <= 21)).sum())
         ko = int((d > 21).sum())
@@ -250,7 +258,7 @@ def main():
 
     tp_ops_data = {"Delai_Saisie_Stats": op_stats, "Conformite_Delai_Effet": tp_met}
 
-    # === 3. DOUBLONS (KPI INITIAUX CONSERVÉS) ===
+    # === 3. DOUBLONS ===
     dup_raw = {}
     cols_dup_cands = {
         'num_personne': ['num_personne', 'numpersonne'],
@@ -285,22 +293,21 @@ def main():
         
     dup_data = {"Indicateurs": {k: fmt_kpi(v, vol) for k, v in dup_raw.items()}}
 
-    # === 4. MATCHING (MISE A JOUR MAJEURE + FILTRAGE) ===
+    # === 4. MATCHING (LOGIQUE STRICTE ET ROBUSTE) ===
     
-    # 4.1. Filtrage Population (Exclure Conjoints)
+    # 4.1. Filtrage Population
     col_type = get_col_name(df_ns, ['type_assure', 'typeassure', 'code_role_personne', 'role'])
     
     if col_type:
         mask_conjoi = df_ns[col_type].astype(str).str.upper().str.contains('CONJOI')
-        # On ne garde que les NON conjoints pour le calcul KPI matching
         df_c = df_ns[~mask_conjoi].copy()
         df_c.reset_index(drop=True, inplace=True)
     else:
         df_c = df_ns.copy()
         
-    vol_c = len(df_c) # Volume Eligibles
+    vol_c = len(df_c)
 
-    # 4.2. Identification Colonnes
+    # 4.2. Colonnes Source NS
     col_mail_ciam = get_col_name(df_c, ['mailciam', 'mail ciam', 'mail_ciam', 'email_ciam'])
     col_val_coord = get_col_name(df_c, ['valeur_coordonnee', 'valeur coordonnee', 'mail', 'email'])
     col_kpep = get_col_name(df_c, ['idkpep', 'id kpep', 'kpep', 'id_kpep'])
@@ -308,7 +315,7 @@ def main():
     col_prenom = get_col_name(df_c, ['prenom', 'firstname'])
     col_dnaiss = get_col_name(df_c, ['date_naissance', 'datenaissance', 'birthdate'])
 
-    # 4.3. Création Clés NS (Lower Case systématique)
+    # 4.3. Clés NS
     df_c['key_mail'] = df_c[col_mail_ciam].str.lower().str.strip().replace('', np.nan) if col_mail_ciam else np.nan
     df_c['key_val'] = df_c[col_val_coord].str.lower().str.strip().replace('', np.nan) if col_val_coord else np.nan
     df_c['key_kpep'] = df_c[col_kpep].replace('', np.nan) if col_kpep else np.nan
@@ -316,88 +323,110 @@ def main():
     df_c['norm_nom'] = df_c[col_nom].apply(clean_text) if col_nom else ""
     df_c['norm_prenom'] = df_c[col_prenom].apply(clean_text) if col_prenom else ""
     
+    # --- CLE DATE : Utilisation de parse_date_strict (ISO) ---
     if col_dnaiss:
-        # FIX: Gestion du format date pour éviter UserWarning
-        # On tente de parser en forçant dayfirst, et on ignore le warning si le format est ambigu
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            df_c['dt_fmt'] = pd.to_datetime(df_c[col_dnaiss], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
-            
+        # On essaie d'abord en strict YYYY-MM-DD car c'est le format observé dans New_S et Rech_...
+        df_c['dt_fmt'] = parse_date_strict(df_c[col_dnaiss]).dt.strftime('%Y-%m-%d')
+        # Si echec, fallback flexible
+        mask_na = df_c['dt_fmt'].isna()
+        if mask_na.any():
+             df_c.loc[mask_na, 'dt_fmt'] = parse_date_flexible(df_c.loc[mask_na, col_dnaiss]).dt.strftime('%Y-%m-%d')
+
         df_c['key_nom_date'] = (df_c['norm_nom'] + "|" + df_c['dt_fmt']).replace(r'^\|.*$', np.nan, regex=True).replace(r'.*\|$', np.nan, regex=True)
         df_c['key_identite_full'] = (df_c['norm_nom'] + "|" + df_c['norm_prenom'] + "|" + df_c['dt_fmt']).replace(r'\|\|', np.nan, regex=True)
     else:
         df_c['key_nom_date'] = np.nan
         df_c['key_identite_full'] = np.nan
 
-    df_c['key_identite_simple'] = (df_c['norm_nom'] + "|" + df_c['norm_prenom']).replace('|', np.nan)
-
-    # 4.4. Préparation Référentiels
-    def prep_ref(df_in):
+    # 4.4. Fonction de Préparation STRICTE des Référentiels
+    def prep_ref_strict(df_in, target_col_nom, target_col_date):
+        """Prépare un référentiel en ciblant EXPLICITEMENT les colonnes nom et date pour la clé."""
         if df_in is None or df_in.empty: return pd.DataFrame()
+        
+        if target_col_nom not in df_in.columns or target_col_date not in df_in.columns:
+            return pd.DataFrame()
+
         temp = pd.DataFrame()
-        # On ne mappe que les champs utiles pour le match
         cols_map = {'realm_id': 'realm_id', 'email': 'email', 'idkpep': 'idkpep'}
         for c_out, c_in in cols_map.items():
             if c_in in df_in.columns: temp[c_out] = df_in[c_in]
         
-        # Clés Techniques Ref
+        temp['norm_nom'] = df_in[target_col_nom].apply(clean_text)
+        
+        # Date Strict ISO
+        temp['dt_fmt'] = parse_date_strict(df_in[target_col_date]).dt.strftime('%Y-%m-%d')
+        # Fallback
+        mask_na = temp['dt_fmt'].isna()
+        if mask_na.any():
+             temp.loc[mask_na, 'dt_fmt'] = parse_date_flexible(df_in.loc[mask_na, target_col_date]).dt.strftime('%Y-%m-%d')
+        
+        temp['key_nom_date'] = (temp['norm_nom'] + "|" + temp['dt_fmt'])
+        return temp
+
+    # Préparation générique (Email/KPEP/Full)
+    def prep_ref_standard(df_in):
+        if df_in is None or df_in.empty: return pd.DataFrame()
+        temp = pd.DataFrame()
+        cols_map = {'realm_id': 'realm_id', 'email': 'email', 'idkpep': 'idkpep'}
+        for c_out, c_in in cols_map.items():
+            if c_in in df_in.columns: temp[c_out] = df_in[c_in]
+        
         if 'email' in temp.columns: 
             temp['key_email'] = temp['email'].str.lower().str.strip().replace('', np.nan)
         if 'idkpep' in temp.columns: 
             temp['key_kpep'] = temp['idkpep'].replace('', np.nan)
-
-        # Clés Identité Ref
-        c_r_nom = get_col_name(df_in, ['last_name', 'lastname', 'nom', 'middlename'])
+            
+        c_r_nom = get_col_name(df_in, ['last_name', 'lastname', 'nom'])
         c_r_pnom = get_col_name(df_in, ['first_name', 'firstname', 'prenom'])
         c_r_date = get_col_name(df_in, ['birthdate', 'date_naissance'])
         
-        temp['norm_nom'] = df_in[c_r_nom].apply(clean_text) if c_r_nom else ""
-        temp['norm_prenom'] = df_in[c_r_pnom].apply(clean_text) if c_r_pnom else ""
-        
-        if c_r_date:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                dt_r = pd.to_datetime(df_in[c_r_date], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
-            temp['key_nom_date'] = (temp['norm_nom'] + "|" + dt_r)
-            temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + dt_r)
-        
-        temp['key_identite_simple'] = (temp['norm_nom'] + "|" + temp['norm_prenom'])
+        if c_r_nom and c_r_pnom and c_r_date:
+             dt_r = parse_date_flexible(df_in[c_r_date]).dt.strftime('%Y-%m-%d') # Identité Full souvent flexible
+             norm_nom = df_in[c_r_nom].apply(clean_text)
+             norm_prenom = df_in[c_r_pnom].apply(clean_text)
+             temp['key_identite_full'] = (norm_nom + "|" + norm_prenom + "|" + dt_r)
+             
         return temp
 
-    # Prépa Sources
-    ref_cm = prep_ref(df_cm)
-    ref_ck = prep_ref(df_ck)
-    ref_nom = prep_ref(df_nom)
-    ref_middle = prep_ref(df_middle)
+    # -- Instanciation des Référentiels --
     
-    # Agrégation des refs identité (CM + CK + Nom + Middle)
-    all_refs = pd.concat([ref_cm, ref_ck, ref_nom, ref_middle], ignore_index=True)
+    # 1. CM & CK (Standard)
+    ref_cm = prep_ref_standard(df_cm)
+    ref_ck = prep_ref_standard(df_ck)
+    
+    # 2. Rech_Nom (Strict: last_name + birthdate)
+    # On utilise "last_name" du fichier ref, "birthdate" du fichier ref
+    # qui matcheront "nom_long" et "date_naissance" de New_S
+    ref_nom = prep_ref_strict(df_nom, 'last_name', 'birthdate')
+    
+    # 3. Rech_Middle (Strict: middlename + birthdate)
+    # On utilise "middlename" du fichier ref pour le matcher avec "nom_long" de New_S
+    ref_middle = prep_ref_strict(df_middle, 'middlename', 'birthdate')
 
-    # Indexes
+    # -- Indexation --
     idx_email = ref_cm.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email') if not ref_cm.empty else pd.DataFrame()
     idx_kpep = ref_ck.dropna(subset=['key_kpep']).drop_duplicates('key_kpep').set_index('key_kpep') if not ref_ck.empty else pd.DataFrame()
-    idx_identite = all_refs.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full') if not all_refs.empty else pd.DataFrame()
     
-    # Indexes Recherche Élargie (Sans Prénom)
+    all_refs = pd.concat([ref_cm, ref_ck, ref_nom, ref_middle], ignore_index=True)
+    idx_identite = all_refs.dropna(subset=['key_identite_full']).drop_duplicates('key_identite_full').set_index('key_identite_full') if not all_refs.empty and 'key_identite_full' in all_refs.columns else pd.DataFrame()
+    
     idx_nom = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date') if not ref_nom.empty else pd.DataFrame()
     idx_middle = ref_middle.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date') if not ref_middle.empty else pd.DataFrame()
 
     # 4.5. WATERFALL MATCHING
-    # Initialisation
     df_c['Found'] = False
     df_c['Methode'] = 'Aucune'
 
-    # Etape 1: Mail CIAM (Priorité Absolue)
+    # Etape 1: Mail CIAM
     if not idx_email.empty and 'realm_id' in idx_email.columns:
         m = df_c.merge(idx_email, left_on='key_mail', right_index=True, how='left', suffixes=('', '_m'))
-        # FIX: Check dynamique du nom de colonne après merge (car _m n'est pas garanti si pas de collision)
         col_res = get_merge_col(m, 'realm_id', '_m')
         if col_res:
             mask = m[col_res].notna()
             df_c.loc[mask, 'Found'] = True
             df_c.loc[mask, 'Methode'] = 'Mail_CIAM'
 
-    # Etape 2: Val Coord (Sur non trouvé)
+    # Etape 2: Val Coord
     if not idx_email.empty and 'realm_id' in idx_email.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_email, left_on='key_val', right_index=True, how='left', suffixes=('', '_m'))
@@ -419,7 +448,7 @@ def main():
             df_c.loc[found_idx, 'Found'] = True
             df_c.loc[found_idx, 'Methode'] = 'KPEP'
 
-    # Etape 4: Identité Complète (Nom+Prenom+Date)
+    # Etape 4: Identité Complète
     if not idx_identite.empty and 'realm_id' in idx_identite.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_identite, left_on='key_identite_full', right_index=True, how='left', suffixes=('', '_m'))
@@ -430,7 +459,7 @@ def main():
             df_c.loc[found_idx, 'Found'] = True
             df_c.loc[found_idx, 'Methode'] = 'Identite_Full'
 
-    # Etape 5: Recherche Élargie (Last Name sans Prénom) - NOUVEAU
+    # Etape 5: Recherche Last Name (Strict)
     if not idx_nom.empty and 'realm_id' in idx_nom.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_nom, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
@@ -441,7 +470,7 @@ def main():
             df_c.loc[found_idx, 'Found'] = True
             df_c.loc[found_idx, 'Methode'] = 'Recherche_Large_Nom'
 
-    # Etape 6: Recherche Élargie (Middle Name sans Prénom) - NOUVEAU
+    # Etape 6: Recherche Middle Name (Strict)
     if not idx_middle.empty and 'realm_id' in idx_middle.columns:
         mask_remain = ~df_c['Found']
         m = df_c[mask_remain].merge(idx_middle, left_on='key_nom_date', right_index=True, how='left', suffixes=('', '_m'))
@@ -456,29 +485,19 @@ def main():
     count_rapproche = df_c['Found'].sum()
     count_non_rapproche = vol_c - count_rapproche
     
-    # Détail par méthode
     raw_methods = df_c[df_c['Found']]['Methode'].value_counts().to_dict()
-    # On convertit les numpy int en int natifs pour JSON
     detail_methodes = {k: int(v) for k, v in raw_methods.items()}
 
-    # Match IEHE (hors population ciblée car IEHE global)
     match_iehe = df_ns['num_personne'].isin(set(df_iehe['refperboccn'])).sum() if df_iehe is not None and 'num_personne' in df_ns.columns and 'refperboccn' in df_iehe.columns else 0
 
-    # -----------------------------------------------------------------------
-    # NOUVEAU BLOC : QUALITE DONNEES CIAM
-    # -----------------------------------------------------------------------
+    # Qualité CIAM
     nb_identique = 0
     nb_vide_ciam = 0
-    
-    # On travaille sur la population éligible (df_c)
     if col_mail_ciam:
-        # Nettoyage
         s_ciam = df_c[col_mail_ciam].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
         nb_vide_ciam = int((s_ciam == '').sum())
-        
         if col_val_coord:
             s_val = df_c[col_val_coord].astype(str).str.lower().str.strip().replace({'nan': '', 'none': ''})
-            # On considère identique si CIAM n'est pas vide ET strictement égal à ValCoord
             mask_ident = (s_ciam != '') & (s_ciam == s_val)
             nb_identique = int(mask_ident.sum())
             
@@ -499,7 +518,7 @@ def main():
         "Qualite_Donnees_CIAM": qualite_ciam_data
     }
 
-    # === 5. QUALITÉ CONTACT (KPI INITIAUX CONSERVÉS) ===
+    # === 5. QUALITÉ CONTACT ===
     ct_met = {"_Glossaire": "Syntaxe emails/téléphones + Profils orphelins."}
     
     tgts = [
