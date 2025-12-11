@@ -1,0 +1,328 @@
+{
+    "Meta": {
+        "Fichier": "09122025_New_S.csv",
+        "Prefixe": "09122025",
+        "Fichiers_Utilises": {
+            "New_S": "09122025_New_S.csv",
+            "IEHE": "09122025_IEHE.csv",
+            "CM": "09122025_CM.csv",
+            "CK": "09122025_CK.csv",
+            "Rech_Nom": "09122025_Rech_Nom.csv",
+            "Rech_Middle": "09122025_Rech_Middle.csv"
+        }
+    },
+    "Activite": {
+        "Global": 17203,
+        "Volumetrie_Radiation": {
+            "Nombre": 0,
+            "Taux": 0.0
+        },
+        "Demographie_Age": {
+            "Moyenne": 46.58,
+            "Mediane": 47.85,
+            "Min": 17,
+            "Max": 85
+        },
+        "Repartition_Par_Type_Assure": {
+            "ASSPRI": {
+                "Nombre": 16806,
+                "Taux": 97.69
+            },
+            "CONJOI": {
+                "Nombre": 397,
+                "Taux": 2.31
+            }
+        },
+        "Details": [
+            {
+                "date_effet_adhesion": "2025-10-01",
+                "type_assure": "ASSPRI",
+                "count": 13
+            },
+            {
+                "date_effet_adhesion": "2025-11-01",
+                "type_assure": "ASSPRI",
+                "count": 28
+            },
+            {
+                "date_effet_adhesion": "2025-11-02",
+                "type_assure": "ASSPRI",
+                "count": 15
+            },
+            {
+                "date_effet_adhesion": "2025-11-03",
+                "type_assure": "ASSPRI",
+                "count": 6
+            },
+            {
+                "date_effet_adhesion": "2025-11-04",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-11-05",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-11-07",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-11-08",
+                "type_assure": "ASSPRI",
+                "count": 6
+            },
+            {
+                "date_effet_adhesion": "2025-11-09",
+                "type_assure": "ASSPRI",
+                "count": 2
+            },
+            {
+                "date_effet_adhesion": "2025-11-10",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-11-22",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-01",
+                "type_assure": "ASSPRI",
+                "count": 18
+            },
+            {
+                "date_effet_adhesion": "2025-12-02",
+                "type_assure": "ASSPRI",
+                "count": 2
+            },
+            {
+                "date_effet_adhesion": "2025-12-02",
+                "type_assure": "CONJOI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-05",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-08",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-08",
+                "type_assure": "CONJOI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-09",
+                "type_assure": "ASSPRI",
+                "count": 4
+            },
+            {
+                "date_effet_adhesion": "2025-12-10",
+                "type_assure": "ASSPRI",
+                "count": 6
+            },
+            {
+                "date_effet_adhesion": "2025-12-13",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2025-12-15",
+                "type_assure": "ASSPRI",
+                "count": 4
+            },
+            {
+                "date_effet_adhesion": "2025-12-20",
+                "type_assure": "ASSPRI",
+                "count": 1
+            },
+            {
+                "date_effet_adhesion": "2026-01-01",
+                "type_assure": "ASSPRI",
+                "count": 178
+            },
+            {
+                "date_effet_adhesion": "2026-01-01",
+                "type_assure": "CONJOI",
+                "count": 14
+            },
+            {
+                "date_effet_adhesion": "2026-02-01",
+                "type_assure": "ASSPRI",
+                "count": 2
+            },
+            {
+                "date_effet_adhesion": "2026-05-01",
+                "type_assure": "ASSPRI",
+                "count": 16513
+            },
+            {
+                "date_effet_adhesion": "2026-05-01",
+                "type_assure": "CONJOI",
+                "count": 381
+            }
+        ]
+    },
+    "Doublons": {
+        "Indicateurs": {
+            "num_personne": {
+                "Nombre": 12,
+                "Taux": 0.07
+            },
+            "num_ctr_indiv": {
+                "Nombre": 397,
+                "Taux": 2.31
+            },
+            "valeur_coordonnee": {
+                "Nombre": 17,
+                "Taux": 0.1
+            },
+            "idkpep": {
+                "Nombre": 12,
+                "Taux": 0.07
+            },
+            "mail_ciam": {
+                "Nombre": 0,
+                "Taux": 0.0
+            },
+            "nom+prenom+datenaissance": {
+                "Nombre": 12,
+                "Taux": 0.07
+            }
+        }
+    },
+    "Matching_Synthese": {
+        "Indicateurs_Clefs": {
+            "Population_Analysee_Eligible": 16806,
+            "Population_Exclue_Conjoints": 397,
+            "Total_Rapproches_CIAM": {
+                "Nombre": 16544,
+                "Taux": 98.44
+            },
+            "Total_Non_Rapproches_CIAM": {
+                "Nombre": 262,
+                "Taux": 1.56
+            },
+            "Detail_Rapprochement_Methode": {
+                "Mail_CIAM": 14706,
+                "KPEP": 1583,
+                "Val_Coord": 249,
+                "Identite_Full": 3,
+                "Recherche_Large_Nom": 3
+            },
+            "NS_vers_IEHE_Global": {
+                "Nombre": 16549,
+                "Taux": 96.2
+            }
+        },
+        "Qualite_Donnees_CIAM": {
+            "Email_Identique_ValCoord": {
+                "Nombre": 6894,
+                "Taux": 41.02
+            },
+            "Email_CIAM_Vide_ou_Null": {
+                "Nombre": 2097,
+                "Taux": 12.48
+            }
+        }
+    },
+    "Service_Client_TP": {
+        "Delai_Saisie_Stats": {
+            "Moyenne": 88.0,
+            "Mediane": 88.0,
+            "Min": 88,
+            "Max": 88
+        },
+        "Conformite_Delai_Effet": {
+            "delai_negatif": {
+                "Nombre": 97,
+                "Taux": 0.56
+            },
+            "delai_ok_0_21": {
+                "Nombre": 4,
+                "Taux": 0.02
+            },
+            "delai_ko_sup_21": {
+                "Nombre": 17095,
+                "Taux": 99.41
+            },
+            "tp_total_ok": {
+                "Nombre": 101,
+                "Taux": 0.59
+            }
+        }
+    },
+    "GED": {
+        "Eligibles": {
+            "Nombre": 101,
+            "Taux": 0.59
+        },
+        "GED_OK_sur_Eligibles": {
+            "Nombre": 92,
+            "Taux": 91.09
+        },
+        "GED_KO_sur_Eligibles": {
+            "Nombre": 9,
+            "Taux": 8.91
+        }
+    },
+    "Qualite_Contact": {
+        "_Glossaire": "Syntaxe emails/téléphones + Profils orphelins.",
+        "NS_Valeur": {
+            "Total": 17203,
+            "Vides": 403,
+            "Remplis": 16800,
+            "Non_Conformes": 0,
+            "Jetables": 0,
+            "Taux_Conformite": 100.0
+        },
+        "NS_MailCIAM": {
+            "Total": 17203,
+            "Vides": 2345,
+            "Remplis": 14858,
+            "Non_Conformes": 0,
+            "Jetables": 0,
+            "Taux_Conformite": 100.0
+        },
+        "CM_Email": {
+            "Total": 15001,
+            "Vides": 0,
+            "Remplis": 15001,
+            "Non_Conformes": 0,
+            "Jetables": 0,
+            "Taux_Conformite": 100.0
+        },
+        "CK_Email": {
+            "Total": 1583,
+            "Vides": 105,
+            "Remplis": 1478,
+            "Non_Conformes": 0,
+            "Jetables": 0,
+            "Taux_Conformite": 100.0
+        },
+        "CM_Phone": {
+            "Total": 15001,
+            "Vides": 4702,
+            "Remplis": 10299,
+            "Valides_Format": 10299,
+            "Invalides_Format": 0,
+            "Taux_Qualite": 100.0
+        },
+        "IEHE_Phone": {
+            "Total": 16537,
+            "Vides": 9553,
+            "Remplis": 6984,
+            "Valides_Format": 6984,
+            "Invalides_Format": 0,
+            "Taux_Qualite": 100.0
+        }
+    }
+}
