@@ -18,6 +18,8 @@ DESCRIPTION : Consolidation des retours CIAM et application de la cascade de rè
 - Maintien des Conjoints dans le fichier de sortie IEHE.
 - Ajout de la colonne 'Email_Other' récupérée depuis les référentiels (CK, CM...).
 - ENRICHISSEMENT MAXIMAL : Ajout Nom, Prenom, Date, Origine, ID Technique, Telephone, Type Event.
+- STRUCTURE COLONNES AUDIT : Ajout des blocs CM_, CK_, RechNom_, RechMiddle_ pour traçabilité complète.
+- BONUS : Ajout Source_Match_Email et Match_Status.
 - Gestion des types (Object) pour éviter les warnings.
 - [FIX] Gestion robuste des fichiers vides pour éviter les KeyError sur key_nom_date.
 ================================================================================
@@ -221,9 +223,11 @@ def main():
              with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 dt_str = pd.to_datetime(df_source[c_dn], dayfirst=True, errors='coerce').dt.strftime('%Y-%m-%d')
+             temp['birthdate'] = dt_str # Stockage au format propre
              temp['key_identite_full'] = (temp['norm_nom'] + "|" + temp['norm_prenom'] + "|" + dt_str)
              temp['key_nom_date'] = (temp['norm_nom'] + "|" + dt_str) 
         else:
+             temp['birthdate'] = ""
              temp['key_identite_full'] = np.nan
              temp['key_nom_date'] = np.nan
              
@@ -238,9 +242,7 @@ def main():
     ref_nom = prep_ref(df_nom, 'Rech_Nom')
     ref_middle = prep_ref(df_middle, 'Rech_Middle')
 
-    # Création des index de matching
-    # [CORRECTION] Ajout des verifications .empty et colonnes avant set_index pour eviter le KeyError
-    
+    # Création des index de matching (pour le waterfall)
     idx_email = pd.DataFrame()
     if not ref_cm.empty and 'key_email' in ref_cm.columns:
         idx_email = ref_cm.dropna(subset=['key_email']).drop_duplicates('key_email').set_index('key_email')
@@ -259,7 +261,6 @@ def main():
     if not all_refs.empty and 'key_identite_simple' in all_refs.columns:
         idx_identite_simple = all_refs.dropna(subset=['key_identite_simple']).drop_duplicates('key_identite_simple').set_index('key_identite_simple')
 
-    # [CORRECTION] C'est ici que votre erreur se produisait
     idx_rech_nom = pd.DataFrame()
     if not ref_nom.empty and 'key_nom_date' in ref_nom.columns:
         idx_rech_nom = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date').set_index('key_nom_date')
@@ -271,30 +272,108 @@ def main():
     # --- 3. EXECUTION DES MATCHINGS ---
     print("   🔍 Exécution des rapprochements...")
 
-    # A. Récupération Colonnes de Contrôle (Email)
-    # [CORRECTION] Gestion des merge vides si index vide
-    def safe_merge_email(df_w, idx_df, col_key, col_ren):
-        if idx_df.empty: return pd.Series([np.nan]*len(df_w), index=df_w.index)
-        temp = df_w.merge(idx_df[['email']], left_on=col_key, right_index=True, how='left')
-        return temp['email']
-
-    df_work['Email_CM'] = safe_merge_email(df_work, idx_email, 'key_val', 'Email_CM')
-    df_work['Email_CK'] = safe_merge_email(df_work, idx_kpep, 'key_kpep', 'Email_CK')
-    df_work['Email_Rech_LastName'] = safe_merge_email(df_work, idx_rech_nom, 'key_nom_date', 'Email_Rech_LastName')
-    df_work['Email_Rech_Middle'] = safe_merge_email(df_work, idx_rech_middle, 'key_nom_date', 'Email_Rech_Middle')
+    # =========================================================================
+    # A. ENRICHISSEMENT SPECIFIQUE (TRAÇABILITÉ)
+    # =========================================================================
     
-    df_work['Email_Rech_SansPrenom'] = df_work['Email_Rech_LastName'].combine_first(df_work['Email_Rech_Middle'])
+    # Initialisation des colonnes de sortie
+    audit_cols = [
+        'CM_Email', 'CM_KPEP',
+        'CK_Email', 'CK_KPEP',
+        'RechMiddle_Email', 'RechMiddle_Nom', 'RechMiddle_Prenom', 'RechMiddle_DateNaissance', 'RechMiddle_KPEP',
+        'RechNom_Email', 'RechNom_Nom', 'RechNom_Prenom', 'RechNom_DateNaissance', 'RechNom_KPEP',
+        'Source_Match_Email', 'Match_Status', 'Email_CIAM_Cible'
+    ]
+    for ac in audit_cols:
+        df_work[ac] = np.nan
+        df_work[ac] = df_work[ac].astype(object)
 
-    # B. Waterfall de Décision (Priorités)
+    # 1) BLOC CM (Matching par Email)
+    # On utilise key_val (valeur_coordonnee) comme clé primaire, sinon key_mail (mail_ciam)
+    # Dans ref_cm, la clé unique fiable est key_email.
+    if not ref_cm.empty:
+        # On tente le merge sur key_val (prioritaire)
+        temp_cm = df_work[['key_val']].merge(
+            ref_cm[['key_email', 'email', 'idkpep']].drop_duplicates('key_email'), 
+            left_on='key_val', right_on='key_email', how='left'
+        )
+        df_work['CM_Email'] = temp_cm['email']
+        df_work['CM_KPEP'] = temp_cm['idkpep']
+
+    # 2) BLOC CK (Matching par KPEP)
+    if not ref_ck.empty:
+        temp_ck = df_work[['key_kpep']].merge(
+            ref_ck[['key_kpep', 'email', 'idkpep']].drop_duplicates('key_kpep'), 
+            left_on='key_kpep', right_on='key_kpep', how='left'
+        )
+        df_work['CK_Email'] = temp_ck['email']
+        df_work['CK_KPEP'] = temp_ck['idkpep']
+
+    # 3) BLOC Rech_Middle (Matching Identité)
+    if not ref_middle.empty:
+        # On ne garde que ceux qui ont une clé identité valide
+        rm_clean = ref_middle.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date')
+        temp_rm = df_work[['key_nom_date']].merge(
+            rm_clean[['key_nom_date', 'email', 'last_name', 'first_name', 'birthdate', 'idkpep']],
+            left_on='key_nom_date', right_on='key_nom_date', how='left'
+        )
+        df_work['RechMiddle_Email'] = temp_rm['email']
+        df_work['RechMiddle_Nom'] = temp_rm['last_name']
+        df_work['RechMiddle_Prenom'] = temp_rm['first_name']
+        df_work['RechMiddle_DateNaissance'] = temp_rm['birthdate']
+        df_work['RechMiddle_KPEP'] = temp_rm['idkpep']
+
+    # 4) BLOC Rech_Nom (Matching Identité)
+    if not ref_nom.empty:
+        rn_clean = ref_nom.dropna(subset=['key_nom_date']).drop_duplicates('key_nom_date')
+        temp_rn = df_work[['key_nom_date']].merge(
+            rn_clean[['key_nom_date', 'email', 'last_name', 'first_name', 'birthdate', 'idkpep']],
+            left_on='key_nom_date', right_on='key_nom_date', how='left'
+        )
+        df_work['RechNom_Email'] = temp_rn['email']
+        df_work['RechNom_Nom'] = temp_rn['last_name']
+        df_work['RechNom_Prenom'] = temp_rn['first_name']
+        df_work['RechNom_DateNaissance'] = temp_rn['birthdate']
+        df_work['RechNom_KPEP'] = temp_rn['idkpep']
+
+    # 5) CALCUL BONUS (Source Match & Status)
+    def compute_source_list(row):
+        srcs = []
+        if pd.notna(row['CM_Email']) and row['CM_Email'] != '': srcs.append('CM')
+        if pd.notna(row['CK_Email']) and row['CK_Email'] != '': srcs.append('CK')
+        if pd.notna(row['RechNom_Email']) and row['RechNom_Email'] != '': srcs.append('Rech_Nom')
+        if pd.notna(row['RechMiddle_Email']) and row['RechMiddle_Email'] != '': srcs.append('Rech_Middle')
+        return ', '.join(srcs) if srcs else 'NULL'
+
+    df_work['Source_Match_Email'] = df_work.apply(compute_source_list, axis=1)
+
+    def compute_status(row):
+        src = row['Source_Match_Email']
+        if src == 'NULL': return 'NO_MATCH'
+        
+        # Vérification Cohérence KPEP (Si dispo dans New_S et dans CK)
+        if pd.notna(row['key_kpep']) and pd.notna(row['CK_KPEP']):
+            if str(row['key_kpep']) != str(row['CK_KPEP']):
+                return 'INCOHERENT_KPEP'
+        
+        return 'MATCH_OK'
+
+    df_work['Match_Status'] = df_work.apply(compute_status, axis=1)
+
+    # =========================================================================
+    # B. WATERFALL DE DECISION (Priorités existantes)
+    # =========================================================================
+    
     df_work['Indicateur_Rapprochement'] = 'CIAM_NON_TROUVE'
     df_work['Methode_Retenue'] = 'AUCUNE'
     
     # Init colonnes cibles (Object)
     target_cols = [
-        'CIAM_Email_Cible', 'CIAM_Societe', 'CIAM_Email_Other', 
+        'CIAM_Societe', 'CIAM_Email_Other', 
         'CIAM_Nom', 'CIAM_Prenom', 'CIAM_Date_Evt', 'CIAM_Origine', 
         'CIAM_KPEP_Trouve', 'CIAM_ID_Technique', 'CIAM_Telephone', 'CIAM_Type_Event'
     ]
+    # Note: CIAM_Email_Cible est déjà dans audit_cols
     
     for col in target_cols:
         df_work[col] = np.nan
@@ -402,7 +481,6 @@ def main():
         if col_realm:
             mask_found = m_mn[col_realm].notna()
             if mask_found.any():
-                # On réutilise la logique interne mais manuellement adaptée pour éviter duplication code complex
                 idx_found = df_work[mask_reliquat][mask_found].index
                 df_work.loc[idx_found, 'Indicateur_Rapprochement'] = 'Rapproché_MiddleName_SansPrenom'
                 df_work.loc[idx_found, 'Methode_Retenue'] = 'MiddleName_SansPrenom'
@@ -420,6 +498,9 @@ def main():
 
     # --- FINALISATION ---
     print("   📝 Finalisation du fichier NS_CIAM...")
+    
+    # On popule Email_CIAM_Cible si la waterfall l'a trouvé mais pas le reliquat (redondance sécu)
+    # Dans la logique ci-dessus, CIAM_Email_Cible est rempli par apply_match.
     
     df_work['Email_CIAM'] = df_work['CIAM_Email_Cible']
     df_work['Email_Other'] = df_work['CIAM_Email_Other']
