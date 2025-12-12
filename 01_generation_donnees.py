@@ -21,7 +21,7 @@ INPUT_DIR = BASE_DIR / "Input_Data"
 OUTPUT_DIR = BASE_DIR / "Output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Config BDD (IEHE) - Paramètres conservés
+# Config BDD (IEHE)
 PG_HOST = "bdd-X0ED0550.alias" 
 PG_PORT = 5559
 PG_DB = "choregie_db"
@@ -32,7 +32,6 @@ IEHE_TABLE  = "refkpep"
 IEHE_COL_ID_TABLE = "refperboccn"
 
 # --- UTILITAIRES ---
-
 def connect_pg(host, port, db):
     try:
         return psycopg.connect(host=host, port=port, dbname=db, user=PG_USER, password=PG_PASSWORD, connect_timeout=3)
@@ -54,6 +53,7 @@ def connect_iehe_auto():
     return None
 
 def clean_col_name(col):
+    """Nettoyage uniquement des noms de colonnes (Headers), pas des données"""
     if not isinstance(col, str): return str(col)
     col = col.replace('\ufeff', '').replace('\u200b', '') # Suppression BOM
     col = col.lower().strip()
@@ -63,21 +63,22 @@ def load_csv_robust(path):
     if not path.exists(): return None
     read_params = {'sep': None, 'engine': 'python', 'dtype': str}
     attempts = [
-        {'encoding': 'utf-8-sig', 'skiprows': 0}, 
-        {'encoding': 'utf-8', 'skiprows': 0},
-        {'encoding': 'latin1', 'skiprows': 0},
-        {'encoding': 'utf-8-sig', 'skiprows': 2},
+        {'encoding': 'utf-8-sig', 'skiprows': 0}, {'encoding': 'utf-8', 'skiprows': 0},
+        {'encoding': 'latin1', 'skiprows': 0}, {'encoding': 'utf-8-sig', 'skiprows': 2},
         {'encoding': 'latin1', 'skiprows': 2}
     ]
     for params in attempts:
         current_params = read_params.copy()
         current_params.update(params)
         try:
-            df = pd.read_csv(path, **current_params)
-            cols = [clean_col_name(c) for c in df.columns]
+            # keep_default_na=False pour garder les chaines vides "" et ne pas convertir "NA"
+            df = pd.read_csv(path, keep_default_na=False, **current_params)
+            df.columns = [clean_col_name(c) for c in df.columns]
+            
+            # Vérification basique que c'est le bon fichier via mots clés
+            cols = df.columns
             keywords = ['adhesion', 'assure', 'email', 'personne', 'kpep', 'realm']
             if any(k in c for c in cols for k in keywords):
-                df.columns = [clean_col_name(c) for c in df.columns]
                 return df
         except: continue
     return None
@@ -124,6 +125,8 @@ def run_iehe_step(df_ns, output_iehe_path):
         return
 
     ids = df_ns[col_target].dropna().unique().tolist()
+    ids = [i for i in ids if i and str(i).strip() != '']
+
     if not ids:
         print("      ⚠️  Aucun ID trouvé.")
         return
@@ -136,11 +139,8 @@ def run_iehe_step(df_ns, output_iehe_path):
     safe_ids = [str(i).replace("'", "") for i in ids]
     
     sql = f"""
-    WITH input_ids AS (
-        SELECT unnest(%(vals)s::text[]) AS v
-    )
-    SELECT DISTINCT r1.*
-    FROM {IEHE_SCHEMA}.{IEHE_TABLE} r1
+    WITH input_ids AS ( SELECT unnest(%(vals)s::text[]) AS v )
+    SELECT DISTINCT r1.* FROM {IEHE_SCHEMA}.{IEHE_TABLE} r1
     JOIN {IEHE_SCHEMA}.{IEHE_TABLE} r2 ON r2.idrpp = r1.idrpp
     JOIN input_ids ON input_ids.v = r1.{IEHE_COL_ID_TABLE}
     """
@@ -162,7 +162,7 @@ def run_iehe_step(df_ns, output_iehe_path):
 # --- ETAPE 2 : GENERATION SQL (CASCADE) ---
 
 def run_sql_step(df, input_dir, output_dir, prefix):
-    print(f"   🔨 Génération Requêtes SQL (Mode Cascade + LowerCase)...")
+    print(f"   🔨 Génération Requêtes SQL (Mode Cascade + ILIKE)...")
     
     # 1. Filtre CIAM
     df_ciam = df.copy()
@@ -232,38 +232,37 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         excluded_count_kpep = len(df_ciam) - len(df_kpep_target)
         kpep_list = df_kpep_target[col_kpep].replace('', np.nan).dropna().str.strip().unique().tolist()
 
-    # LISTE 3 : NOM + DATE 
+    # LISTE 3 : NOM + DATE
     nom_date_list = []
     excluded_count_nom = 0
     df_reliquat = df_ciam[~(mask_found_by_email | mask_found_by_kpep)] 
     excluded_count_nom = len(df_ciam) - len(df_reliquat)
     
     if col_nom and col_dnaiss and not df_reliquat.empty:
-        temp_df = df_reliquat[[col_nom, col_dnaiss]].dropna().copy()
+        temp_df = df_reliquat[[col_nom, col_dnaiss]].copy()
+        
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            # --- FIX DATE : Utilisation du format explicite YYYY-MM-DD ---
-            # Le fichier source utilise YYYY-MM-DD, on le force pour éviter l'inversion
-            temp_df['dt_obj'] = pd.to_datetime(temp_df[col_dnaiss], format='%Y-%m-%d', errors='coerce')
-            
-            # Ensuite on formate strictement en YYYY-MM-DD pour le SQL (standard ISO DB)
+            # --- DATE : FLEXIBLE (Input) -> STRICT (Output) ---
+            temp_df['dt_obj'] = pd.to_datetime(temp_df[col_dnaiss], dayfirst=True, errors='coerce')
             temp_df['dt_fmt'] = temp_df['dt_obj'].dt.strftime('%Y-%m-%d')
         
         temp_df = temp_df.dropna(subset=['dt_fmt'])
-        temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.strip().str.replace("'", "''") 
         
-        # Le 'set' ici assure l'unicité du couple (Nom, Date). 
-        # RYCKEBUSCH (1973) et DUBOIS (1973) seront bien DEUX entrées distinctes.
+        # --- NOM : ECHAPPEMENT POUR SQL UNIQUEMENT ---
+        temp_df['nom_fmt'] = temp_df[col_nom].astype(str).str.replace("'", "''", regex=False)
+        
         raw_tuples = list(zip(temp_df['nom_fmt'], temp_df['dt_fmt']))
-        nom_date_list = sorted(list(set(raw_tuples)))
+        clean_tuples = [t for t in raw_tuples if t[0] and t[0].lower() != 'nan']
+        nom_date_list = sorted(list(set(clean_tuples)))
 
     # --- LOGS ---
     print("\n      📊 [VOLUMETRIE REQUETES]")
     print(f"      1. Requête EMAIL générée sur : {len(email_list)} adresses (Lower)")
     print(f"      2. Requête KPEP générée sur  : {len(kpep_list)} IDs")
-    print(f"         └-> Exclus (déjà trouvés Email) : {excluded_count_kpep}")
+    print(f"        └-> Exclus (déjà trouvés Email) : {excluded_count_kpep}")
     print(f"      3. Requête LARGE (Nom/Middle) sur : {len(nom_date_list)} Couples (Nom, Date)")
-    print(f"         └-> Exclus (déjà trouvés Email/KPEP) : {excluded_count_nom}")
+    print(f"        └-> Exclus (déjà trouvés Email/KPEP) : {excluded_count_nom}")
     print("      ------------------------------------------------")
 
     # 6. Écriture
@@ -289,19 +288,25 @@ def run_sql_step(df, input_dir, output_dir, prefix):
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f: base_sql = f.read()
             
-            # --- PATCH DISTINCT ON (CORRECTIF MAJEUR) ---
-            # Si le template a un DISTINCT restrictif (ex: date seulement), on l'élargit
-            # Ceci permet d'éviter que DUBOIS écrase RYCKEBUSCH
+            # --- MODIF 1 : INJECTION COLONNE MIDDLE NAME (CRITIQUE) ---
+            # Permet au fichier de sortie de contenir le champ nécessaire au rapprochement Python
+            if "complex_middlename" == data_type:
+                 if "t_ciam.MIDDLE_NAME" not in base_sql:
+                     # On tente d'insérer proprement dans le SELECT
+                     if "SELECT DISTINCT" in base_sql:
+                         base_sql = base_sql.replace("SELECT DISTINCT", "SELECT DISTINCT t_ciam.MIDDLE_NAME,", 1)
+                     elif "SELECT" in base_sql:
+                         base_sql = base_sql.replace("SELECT", "SELECT t_ciam.MIDDLE_NAME,", 1)
+
+            # --- PATCH DISTINCT ON ---
             if "complex" in data_type:
                 target_field_distinct = "last_name" if "lastname" in data_type else "middleName"
                 
-                # Patch du SELECT DISTINCT ON
                 if "DISTINCT ON (birthDate)" in base_sql:
                     base_sql = base_sql.replace(
                         "DISTINCT ON (birthDate)", 
                         f"DISTINCT ON (first_name, {target_field_distinct}, birthDate)"
                     )
-                # Patch du ORDER BY (nécessaire pour le DISTINCT ON)
                 if "ORDER BY birthDate" in base_sql:
                     base_sql = base_sql.replace(
                         "ORDER BY birthDate", 
@@ -321,8 +326,8 @@ def run_sql_step(df, input_dir, output_dir, prefix):
                 target_col = "usr.last_name" if data_type == "complex_lastname" else "attmiddle.value"
                 conditions = []
                 for nom, dt in data_list:
-                    # Ici dt est maintenant garanti au format YYYY-MM-DD
-                    # On compare en tant que chaîne, ce qui fonctionne si la base stocke la date ou une chaîne ISO
+                    # --- MODIF 2 : ILIKE (CRITIQUE) ---
+                    # Case Insensitive pour maximiser les résultats trouvés par le SQL
                     cond = f"({target_col} ILIKE '{nom}' AND att2.value = '{dt}')"
                     conditions.append(cond)
                 values_str = "\n      OR ".join(conditions)
